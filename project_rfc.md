@@ -516,6 +516,16 @@ way:
 Nobody can remove another member: a Destination applies `thread.left` and
 `thread.refused` only to addresses on the sender's own domain (§5.3).
 
+Nobody can add themselves either. A Destination that holds the thread named
+by `thread.federation_id` (or, failing that, by `thread.in_reply_to`)
+**MUST** refuse a message on it whose `message.sender_email` is not a member
+of that thread there, with `425 not_a_member`, and **MUST NOT** record the
+sender as a member on the strength of `thread.members`. A Domain's
+`mailer-daemon` (§6.5) is exempt. The refusal is transient on purpose: a new
+member's Domain may send before the message that added them has reached this
+Destination, and the Origin's retry (§6.4) then gets in once it has. A sender
+who was never added keeps getting `425` until the Origin's budget runs out.
+
 ## 6. Inbound transfer
 
 ### 6.1 Request
@@ -613,6 +623,7 @@ is true:
 | 404    | All `recipients` are unknown at the Destination and none were onboarded.                                    | `{"error": "no_recipients"}`                                                     |
 | 413    | Envelope body exceeds `max_envelope_bytes`.                                                                 | `{"error": "too_large"}`                                                         |
 | 415    | `Content-Type` is not `application/json; charset=utf-8`, or `Content-Encoding` was set on the request body. | `{"error": "unsupported_media_type"}`                                            |
+| 425    | `message.sender_email` is not a member of a thread the Destination holds (§5.6).                           | `{"error": "not_a_member"}`                                                      |
 | 429    | Rate limit exceeded.                                                                                        | `{"error": "rate_limited", "retry_after_seconds": n}`                            |
 | 5xx    | Transient Destination failure.                                                                              | `{"error": "server_error"}`                                                      |
 
@@ -1419,6 +1430,9 @@ the signing input changes.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §5.6, §6.3: a Destination refuses a message on a thread it holds from a
+    sender who is not a member of it with `425 not_a_member`, and never adds
+    a sender because `thread.members` names them.
   - §5.5: a reply belongs to the thread, not to a message; there is no link
     from a reply to the message it answers.
   - Appendix A.3 corrected: `thread.in_reply_to` is the thread's
