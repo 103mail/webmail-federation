@@ -126,10 +126,14 @@ Assume the network is hostile and the peer is often unreachable. Every design ch
 `EmailClient::addMessageToSubscribers` becomes:
 
 ```
+before writing anything:
+    if any subscriber is on a local domain and has no account:
+        refuse the whole send, naming those addresses (§13.5)
+
 for each subscriber email:
     domain = parse(email)
     if domain in local_domains  or  domain_row(domain).is_local:
-        existing path: addCustomer-if-missing + insert thread/message rows
+        insert thread/message rows (the account exists, see above)
     else:
         resolve peer backend for `domain` (discovery, §5)
         enqueue outbound HTTP POST on the federation_outbox table
@@ -337,7 +341,7 @@ On `202 Accepted`, `federation_outbox.status` flips to `delivered`. On transient
 2. Checks `envelope.origin_domain == X-Federation-Sender == domain-of(sender_email)`.
 3. Dedupes on `(origin_domain, envelope_id)`.
 4. Writes local `g_thread` / `g_message` rows, carrying over the `federation_id` values so replies can correlate.
-5. Calls the **local** branch of `addMessageToSubscribers` for `bob@example.com`: if Bob has no account, the existing auto-onboarding creates `customer` + `user` + `mailbox` + `folder` + `alias` — but now with an `@example.com` alias, because this backend's domain config says its local domain is `example.com`.
+5. Calls the **local** branch of `addMessageToSubscribers` for `bob@example.com`, who has an account there. Had he not, example.com would deliver nothing, create no account, and answer `404 no_recipients`, which 103mail.com turns into a bounce in Alice's inbox (§13.5).
 6. Inserts Bob's per-user `thread` / `message`, unread.
 7. Enqueues a `sent_email` notification linking to `https://webmail.example.com/...` — **Bob's home backend**, not Alice's.
 
@@ -501,30 +505,38 @@ The four-level hierarchy (§0) drives the rules here — specifically, that Cust
 - **Tokens are Domain-scoped on the wire, Customer-scoped internally.** Bearer tokens are issued by the backend for a specific (Customer, User) pair, and carry the DNS domain the token was minted for in their claims. A token minted at `webmail.acme-eu.com` is accepted at `webmail.acme-us.com` **only if** both Domains share a Customer — the backend checks `domain.customer_id` equality before honoring cross-Domain use. A token **MUST NEVER** be honored across Customer boundaries.
 - **Federation identity is per-Domain, always.** On the wire, Alice's mail from `alice@acme-eu.com` is signed by the `acme-eu.com` keypair, and mail from `alice@acme-us.com` is signed by the `acme-us.com` keypair. Peers see two independent Domains. The Customer linking them is invisible — peers cannot tell that these two `alice`s are the same person, nor that the Domains are co-owned.
 
-#### 13.5 Auto-onboarding uses the recipient's domain, not a global default
+#### 13.5 Unknown addresses on a hosted Domain are refused, not onboarded
 
-Today `addCustomer` creates a random `{7digit}@{default_domain}` alias. On a multi-Domain Server, it derives the alias domain from the recipient's email:
+Today `addCustomer` creates an account for any recipient who has none, with a random `{7digit}@{default_domain}` alias, and emails them an invitation. Under federation that one behaviour splits in two:
+
+- **An External address** (`dave@gmail.com`, on a domain that does not federate) goes to the Default Registrar, which keeps a shadow mailbox for it (§14, §15). The sending Server creates nothing.
+- **An address on a Domain this Server hosts that has no account** is refused. Nobody is onboarded.
+
+Refusal happens wherever the unknown address is first seen:
 
 ```
-email       = "foo@example.com"
-domain      = "example.com"
-# Is this domain hosted here?
-if domain in local_domains:
-    # Resolve the owning Customer of this Domain; auto-onboarding
-    # creates a user inside that Customer (user.customer_id = owning customer).
-    owning_customer = local_domains[domain].customer_id
-    alias_local_part = random_int(1000000, 9999999)
-    alias            = f"{alias_local_part}@{domain}"
-    create user(customer_id = owning_customer)
-         + mailbox(customer_id = owning_customer)
-         + folder(customer_id = owning_customer)
-         + alias(customer_id = owning_customer, email = alias)
-    # If the Customer does not yet exist (brand-new tenant), create it first.
-else:
-    # Not local — federation branch (§4), no onboarding.
+compose or add-subscriber on this Server:
+    if any address is on a hosted Domain and has no account:
+        refuse the whole action, naming those addresses; write nothing
+
+incoming envelope:
+    deliver to the recipients that have an account
+    if none of them has one: 404 no_recipients (RFC §6.5)
+        -> the Origin turns it into a local bounce for the sender (§4)
+    never create an account
 ```
 
-The random-local-part trick for privacy is preserved; only the domain suffix is now dynamic.
+Refusing at compose, rather than delivering to the rest and bouncing the unknown address, is possible because the Server knows its own accounts at that moment: the sender fixes the typo before anyone gets a partial thread.
+
+Why refuse rather than onboard:
+
+- **The invitation has nowhere to go.** An address on a webmail-only Domain exists only in this Server. Inviting `foo@example.com` by email when `foo@example.com` does not exist reaches nobody, or reaches whoever controls that mailbox elsewhere if the domain also receives ordinary email, which is not a trust decision a sender should make by typing an address.
+- **Accounts on a hosted Domain are created on purpose**, by signup (§15.3) or by an administrator of the owning Customer, never as a side effect of someone writing to them. A typo no longer creates a mailbox.
+- **It matches the rest of the design.** §14 already says unknown users on federated Domains bounce and are never shadowed, and §15.4's fan-out turns them into a `404` and a local bounce.
+
+What remains of the old rule is where generated addresses go. When a Server does generate an address, the random `{7digit}` handle of a new mailbox or a Registrar's shadow canonical (§14.1), it is always on a Domain this Server hosts. It is never on a peer: discovered peers are `domain` rows too, with no owning Customer, so "the row where `customer_id IS NULL`" no longer identifies our own Domain (§3).
+
+Open: an incoming envelope that names both known and unknown recipients is accepted with `202`, and RFC §6.3 has no way to report the unknown ones, so they are not bounced. Either the `202` body lists refused recipients for the Origin to bounce, or the Origin sends one envelope per recipient.
 
 #### 13.6 Delivery between co-hosted Domains short-circuits federation
 
