@@ -91,6 +91,9 @@ Server      (physical deployment; process + database)
 - **Registrar** — A Domain whose peer descriptor advertises `"registrar": true`
   (§4.2). Registrars accept envelopes addressed to External addresses and expose
   the endpoints in §8.3–§8.5. Non-Registrar is the default.
+- **Default Registrar** — The one Registrar Domain to which a non-Registrar
+  Domain sends envelopes for External addresses (§8.2). Every non-Registrar
+  Domain has one; a Registrar is its own.
 - **External address** — A mail address whose domain is neither the
   Destination's own DNS domain nor a Federation-enabled DNS domain from the
   Destination's point of view (e.g. `alice@gmail.com` to any Destination that
@@ -624,7 +627,8 @@ and is normative.
 
 This section defines additional wire protocol that applies only to Domains
 advertising `"registrar": true` in their peer descriptor (§4.2). Non-Registrar
-Domains are unaffected by §8.
+Domains are affected only by the Origin-side rules of §8.2: they send
+External-addressed envelopes to their Default Registrar.
 
 ### 8.1 Registrar advertisement
 
@@ -675,14 +679,20 @@ and across queue replays. Specifically:
   retry time, the Origin **MUST** treat the send as permanently failed
   (`registrar_revoked`) and generate a bounce per §6.5.
 
-How an Origin initially chooses the Registrar (static configuration, ordered
-list of fallbacks) is out of scope; the stability and single-destination
-requirements are not.
+**Default Registrar.** Every non-Registrar Domain **MUST** have a Default
+Registrar: one Registrar Domain, on the same Server or another, that it sends
+every External-addressed envelope to. How it is configured is out of scope, but
+a non-Registrar Domain without one is not conformant (§11), and an
+implementation **SHOULD** refuse to start without one. A Registrar is its own
+Default Registrar and **MAY** resolve External recipients locally rather than
+federating them.
 
-An Origin that is itself a Registrar **MAY** resolve External recipients locally
-rather than selecting a peer Registrar. A non-Registrar Origin with no Registrar
-available to it **MUST** refuse the send at compose time and **MUST NOT**
-silently drop or rewrite recipients.
+Because every Domain has a Default Registrar, an Origin always has somewhere to
+send an External recipient. It **MUST NOT** refuse, silently drop, or rewrite
+such a recipient. If the Default Registrar cannot be reached, the retry and
+bounce rules of §6.4 and §6.5 apply as for any other Destination, and the
+stability requirement above still holds: every retry of an envelope goes to the
+Registrar it was first queued for.
 
 ### 8.3 Registrar lookup
 
@@ -1082,6 +1092,8 @@ A **Basic Webmail-Federation Domain** **MUST** implement:
 - §7 (inline attachments with size caps and hash verification).
 - §9.1–§9.5, §9.8 (transport, auth scope, replay, rotation, DNS trust).
 - §10 (versioning and unknown-field policy).
+- §8.2 Origin-side rules: a Default Registrar, and sending every
+  External-addressed envelope to it with a stable selection.
 
 A **Registrar Domain** **MUST** implement all of the above, plus:
 
@@ -1259,6 +1271,11 @@ encoding is deterministic given the inputs.
 
 ## Appendix C. Change log
 
+- **Unreleased:**
+  - §8.2: every non-Registrar Domain **MUST** have a Default Registrar, so an
+    Origin always has a Registrar for an External address. Replaces the rule
+    that an Origin with no Registrar refuses the send at compose time. Added to
+    the Basic tier in §11 and defined in §1.3.
 - **0.2 (2026-04-23):**
   - Signature: dropped pre-SHA-256, added header coverage, specified 0x0A
     separators and exact byte encodings. Ed25519 signs directly.
