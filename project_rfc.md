@@ -363,7 +363,13 @@ body, not the wire chunks.
   "thread": {
     "federation_id": "018f4d2b-9f21-7890-abcd-ef0123456790",
     "subject": "Hello from 103mail",
-    "in_reply_to": null
+    "in_reply_to": null,
+    "members": [
+      "1234567@103mail.com",
+      "bob@example.com",
+      "carol@example.com",
+      "erin@mail.acme.io"
+    ]
   },
   "message": {
     "federation_id": "018f4d2b-9f21-7890-abcd-ef0123456791",
@@ -405,6 +411,7 @@ Lengths below are maximum decoded byte lengths of the UTF-8 string. Receivers
 | `thread.federation_id`  | string | yes      | UUIDv7.                                                                                                                                                                                                                                                             |
 | `thread.subject`        | string | yes      | May be empty string. Max 998 bytes.                                                                                                                                                                                                                                 |
 | `thread.in_reply_to`    | string | no       | If non-null, a UUIDv7 that is the `federation_id` of a thread the Origin has previously sent to or received from the Destination. The Destination **MAY** accept an envelope whose `in_reply_to` it has not seen and **SHOULD** create a fresh thread in that case. |
+| `thread.members`        | array  | no       | 1–1000 entries. Each entry is an addr-spec. Everyone subscribed to the thread at the Origin when the message was sent, on any Domain, including `message.sender_email` and every entry of `recipients`. Absent means `message.sender_email` plus `recipients`.                     |
 | `message.federation_id` | string | yes      | UUIDv7.                                                                                                                                                                                                                                                             |
 | `message.sender_email`  | string | yes      | RFC 5321 / 5322 addr-spec. Lowercased domain part. Max 320 bytes.                                                                                                                                                                                                   |
 | `message.sender_name`   | string | no       | If present, max 255 bytes.                                                                                                                                                                                                                                          |
@@ -413,6 +420,17 @@ Lengths below are maximum decoded byte lengths of the UTF-8 string. Receivers
 | `message.sent_at`       | string | yes      | Same rules as `origin_sent_at`.                                                                                                                                                                                                                                     |
 | `attachments`           | array  | yes      | 0–64 entries. See §7 for attachment field rules.                                                                                                                                                                                                                    |
 | `recipients`            | array  | yes      | 1–100 entries. Each entry is an addr-spec. **MUST** either all share the Destination's DNS domain, or the Destination **MUST** be a Registrar (§8.2).                                                                                                               |
+
+**Recipients and members.** `recipients` is who this envelope is delivered to;
+`thread.members` is who the thread belongs to. A thread with members on several
+Domains reaches each of them through its own envelope, each listing only that
+Destination's addresses in `recipients`, while all of them carry the same
+`thread.members`. The Destination delivers only to `recipients`, and records
+`thread.members` as the thread's membership, so that a reply written there is
+sent to every member on every Domain. It adds members it did not know of and
+removes none on the strength of an envelope. An envelope whose `recipients` are
+not all on the Destination's DNS domain is rejected with `400
+schema_violation`, unless the Destination is a Registrar (§8.2).
 
 Unknown fields in the envelope **MUST** be ignored by the Destination. No
 unknown field may carry side effects.
@@ -1288,6 +1306,9 @@ encoding is deterministic given the inputs.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §5.2, §5.3: optional `thread.members` carries a thread's membership across
+    Domains, so `recipients` can hold only the Destination's own addresses as
+    §5.3 requires while a reply still reaches every member.
   - §6.3: a `202` may list `refused_recipients` with the code
     `unknown_recipient`, for an envelope delivered to some recipients but not
     others. §6.5: the Origin bounces those recipients.
