@@ -411,8 +411,9 @@ Lengths below are maximum decoded byte lengths of the UTF-8 string. Receivers
 | `thread.federation_id`  | string | yes      | UUIDv7.                                                                                                                                                                                                                                                             |
 | `thread.subject`        | string | yes      | May be empty string. Max 998 bytes.                                                                                                                                                                                                                                 |
 | `thread.in_reply_to`    | string | no       | If non-null, a UUIDv7 that is the `federation_id` of a thread the Origin has previously sent to or received from the Destination. The Destination **MAY** accept an envelope whose `in_reply_to` it has not seen and **SHOULD** create a fresh thread in that case. |
-| `thread.members`        | array  | no       | 1–1000 entries. Each entry is an addr-spec. Everyone subscribed to the thread at the Origin when the message was sent, on any Domain, including `message.sender_email` (unless it is `mailer-daemon`, §6.5) and every entry of `recipients`. Absent means `message.sender_email` plus `recipients`.                     |
+| `thread.members`        | array  | no       | 1–1000 entries. Each entry is an addr-spec. Everyone subscribed to the thread at the Origin when the message was sent, on any Domain, including `message.sender_email` (unless it is `mailer-daemon`, §6.5, or in `thread.left`, §5.6) and every entry of `recipients`. Absent means `message.sender_email` plus `recipients`.                     |
 | `thread.refused`        | array  | no       | 0–100 entries. Each entry is an addr-spec on the Origin's own DNS domain that the Origin refused as unknown (§6.5). None of them may appear in `thread.members`.                                                                                                                 |
+| `thread.left`           | array  | no       | 0–100 entries. Each entry is an addr-spec on the Origin's own DNS domain of a member who left the thread (§5.6). None of them may appear in `thread.members`.                                                                                                                 |
 | `message.federation_id` | string | yes      | UUIDv7.                                                                                                                                                                                                                                                             |
 | `message.sender_email`  | string | yes      | RFC 5321 / 5322 addr-spec. Lowercased domain part. Max 320 bytes.                                                                                                                                                                                                   |
 | `message.sender_name`   | string | no       | If present, max 255 bytes.                                                                                                                                                                                                                                          |
@@ -432,8 +433,8 @@ sent to every member on every Domain. It adds members it did not know of and
 removes none on the strength of an envelope, with two exceptions. It does not
 record an address on its own DNS domain that has no account there: that
 address is refused (§6.3), not a member. And it stops treating an address in
-`thread.refused` as a member, but only an address on the Origin's own DNS
-domain. A Domain speaks only for its own addresses, so it ignores any other
+`thread.refused` or `thread.left` as a member, but only an address on the
+Origin's own DNS domain. A Domain speaks only for its own addresses, so it ignores any other
 entry, and no Domain can remove people who live elsewhere. An envelope whose `recipients` are
 not all on the Destination's DNS domain is rejected with `400 not_registrar`,
 unless the Destination is a Registrar (§8.2).
@@ -483,6 +484,32 @@ but every member reads the same one. A Domain whose clock is wrong, or that
 dates its own messages earlier or later on purpose, moves them up or down a
 thread. That changes only the order a conversation is read in, never who wrote
 what.
+
+### 5.6 Membership changes
+
+Who is on a thread changes in three ways, and each travels as a message in the
+thread, so every member sees it happen and every Domain learns of it the same
+way:
+
+- **Joining.** A member adds someone with a message saying so. The new address
+  is in that message's `thread.members`, and its Domain is among the
+  Destinations. A Domain that already holds the thread **SHOULD** show a member
+  it newly receives the thread for its earlier messages, so that an invitation
+  brings the history. How the history reaches a Domain that does not hold the
+  thread yet is not defined in this version.
+- **Leaving.** Only a member's own Domain can say they left. It sends a message
+  in the thread from the member, saying they left, to every other member's
+  Domain, with the member in `thread.left` and not in `thread.members`. After
+  that, its Domain does not deliver the thread to them and does not accept a
+  message on it from them. An envelope written before the notice reached its
+  sender may still name them: the Destination delivers it to nobody who left
+  and does not refuse them, since they exist, and answers `202` even when that
+  leaves nobody to deliver to.
+- **Refusal.** An address that does not exist is refused by its own Domain,
+  which tells the thread in the same way (§6.5).
+
+Nobody can remove another member: a Destination applies `thread.left` and
+`thread.refused` only to addresses on the sender's own domain (§5.3).
 
 ## 6. Inbound transfer
 
@@ -1364,6 +1391,9 @@ encoding is deterministic given the inputs.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §5.6 new: joining, leaving and refusal each travel as a message in the
+    thread; optional `thread.left` carries a departure from the member's own
+    Domain, and an invitation brings the history where the Domain holds it.
   - §5.3, §6.5: a Domain that refuses an address tells the thread's other
     Domains with a message from its `mailer-daemon` carrying optional
     `thread.refused`; a Destination accepts it only for addresses on the
