@@ -411,7 +411,8 @@ Lengths below are maximum decoded byte lengths of the UTF-8 string. Receivers
 | `thread.federation_id`  | string | yes      | UUIDv7.                                                                                                                                                                                                                                                             |
 | `thread.subject`        | string | yes      | May be empty string. Max 998 bytes.                                                                                                                                                                                                                                 |
 | `thread.in_reply_to`    | string | no       | If non-null, a UUIDv7 that is the `federation_id` of a thread the Origin has previously sent to or received from the Destination. The Destination **MAY** accept an envelope whose `in_reply_to` it has not seen and **SHOULD** create a fresh thread in that case. |
-| `thread.members`        | array  | no       | 1–1000 entries. Each entry is an addr-spec. Everyone subscribed to the thread at the Origin when the message was sent, on any Domain, including `message.sender_email` and every entry of `recipients`. Absent means `message.sender_email` plus `recipients`.                     |
+| `thread.members`        | array  | no       | 1–1000 entries. Each entry is an addr-spec. Everyone subscribed to the thread at the Origin when the message was sent, on any Domain, including `message.sender_email` (unless it is `mailer-daemon`, §6.5) and every entry of `recipients`. Absent means `message.sender_email` plus `recipients`.                     |
+| `thread.refused`        | array  | no       | 0–100 entries. Each entry is an addr-spec on the Origin's own DNS domain that the Origin refused as unknown (§6.5). None of them may appear in `thread.members`.                                                                                                                 |
 | `message.federation_id` | string | yes      | UUIDv7.                                                                                                                                                                                                                                                             |
 | `message.sender_email`  | string | yes      | RFC 5321 / 5322 addr-spec. Lowercased domain part. Max 320 bytes.                                                                                                                                                                                                   |
 | `message.sender_name`   | string | no       | If present, max 255 bytes.                                                                                                                                                                                                                                          |
@@ -428,7 +429,12 @@ Destination's addresses in `recipients`, while all of them carry the same
 `thread.members`. The Destination delivers only to `recipients`, and records
 `thread.members` as the thread's membership, so that a reply written there is
 sent to every member on every Domain. It adds members it did not know of and
-removes none on the strength of an envelope. An envelope whose `recipients` are
+removes none on the strength of an envelope, with two exceptions. It does not
+record an address on its own DNS domain that has no account there: that
+address is refused (§6.3), not a member. And it stops treating an address in
+`thread.refused` as a member, but only an address on the Origin's own DNS
+domain. A Domain speaks only for its own addresses, so it ignores any other
+entry, and no Domain can remove people who live elsewhere. An envelope whose `recipients` are
 not all on the Destination's DNS domain is rejected with `400 not_registrar`,
 unless the Destination is a Registrar (§8.2).
 
@@ -635,7 +641,24 @@ Origin **MUST** generate a local bounce back to the sender. On a `202` whose
 `refused_recipients` is not empty, the Origin **MUST** generate one for those
 recipients, with the `error` code each entry carries; it **MUST** ignore any
 entry whose address was not in the envelope's `recipients`, so a Destination
-cannot cause bounces for addresses it was never sent. In either case:
+cannot cause bounces for addresses it was never sent.
+
+A recipient refused as `unknown_recipient`, or named in an envelope answered
+`404 no_recipients`, did not receive the message and is not a member of the
+thread. The Origin **SHOULD** stop treating it as one: leave it out of
+`thread.members` and out of the `recipients` of later envelopes for that
+thread, so that the sender is told once rather than on every reply.
+
+The thread's other Domains may already have recorded the refused address as a
+member, from the `thread.members` of the envelope that named it. The Domain
+that refused it **SHOULD** tell them the way an addition is told: with a
+message in the thread from `mailer-daemon@{its domain}`, saying which addresses
+do not exist there, sent to every other member's Domain like any other message,
+with those addresses in `thread.refused`. Unlike a bounce, this message is
+federated. `mailer-daemon` is never a member of a thread: such a message's
+`thread.members` need not include it, and a Destination does not record it.
+
+In either case:
 
 - The bounce is a local `message` row inserted into the sender's inbox, under
   the same `customer` tenancy as the original sender.
@@ -1341,6 +1364,12 @@ encoding is deterministic given the inputs.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §5.3, §6.5: a Domain that refuses an address tells the thread's other
+    Domains with a message from its `mailer-daemon` carrying optional
+    `thread.refused`; a Destination accepts it only for addresses on the
+    sender's own domain.
+  - §5.3, §6.5: an address refused as unknown is not a member of the thread;
+    the Destination does not record it and the Origin stops sending to it.
   - §5.5 new: every Domain shows a thread's messages in one order, by
     `message.sent_at` in whole seconds and then `message.federation_id`, which
     is assigned when the message is written; `sent_at` is taken as given.
