@@ -536,7 +536,7 @@ Why refuse rather than onboard:
 
 What remains of the old rule is where generated addresses go. When a Server does generate an address, the random `{7digit}` handle of a new mailbox or a Registrar's shadow canonical (§14.1), it is always on a Domain this Server hosts. It is never on a peer: discovered peers are `domain` rows too, with no owning Customer, so "the row where `customer_id IS NULL`" no longer identifies our own Domain (§3).
 
-Open: an incoming envelope that names both known and unknown recipients is accepted with `202`, and RFC §6.3 has no way to report the unknown ones, so they are not bounced. Either the `202` body lists refused recipients for the Origin to bounce, or the Origin sends one envelope per recipient.
+An incoming envelope that names both known and unknown recipients is delivered to the known ones and accepted with `202`, and the unknown ones are listed in its `refused_recipients` with the code `unknown_recipient` (RFC §6.3). The Origin bounces them to the sender (RFC §6.5), so no recipient is lost in silence. A replay of the envelope gets the same list.
 
 #### 13.6 Delivery between co-hosted Domains short-circuits federation
 

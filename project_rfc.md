@@ -519,7 +519,7 @@ is true:
 
 | Status | Condition                                                                                                   | Body                                                                             |
 | ------ | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| 202    | Envelope accepted (new or idempotent replay).                                                               | `{"envelope_id": "...", "status": "accepted"}`                                   |
+| 202    | Envelope accepted (new or idempotent replay), for at least one recipient.                                  | `{"envelope_id": "...", "status": "accepted", "refused_recipients": [...]}`      |
 | 400    | Malformed envelope, unsupported version, schema violation, attachment mismatch.                             | `{"error": "<code>", "detail": "..."}`                                           |
 | 401    | Signature, nonce, sender, or date check failed.                                                             | `{"error": "bad_signature" \| "sender_mismatch" \| "replay" \| "stale_request"}` |
 | 403    | Origin domain is not on the Destination's allowlist.                                                        | `{"error": "peer_not_allowed"}`                                                  |
@@ -528,6 +528,17 @@ is true:
 | 415    | `Content-Type` is not `application/json; charset=utf-8`, or `Content-Encoding` was set on the request body. | `{"error": "unsupported_media_type"}`                                            |
 | 429    | Rate limit exceeded.                                                                                        | `{"error": "rate_limited", "retry_after_seconds": n}`                            |
 | 5xx    | Transient Destination failure.                                                                              | `{"error": "server_error"}`                                                      |
+
+**Partial acceptance.** When the Destination delivers to some recipients but
+not to others, it answers `202` and lists every recipient it did not deliver to
+in `refused_recipients`, an array of objects `{"address": "...", "error":
+"<code>"}`. The only code defined in this version is `unknown_recipient`: the
+address is on the Destination's DNS domain and has no account there. The field
+is omitted or empty when every recipient was delivered to. A replay of the
+envelope (§5.4) **MUST** return the same list. When no recipient can be
+delivered to, the Destination answers `404 no_recipients` instead. An Origin
+that does not understand the field ignores it (§10), and so does not bounce
+the refused recipients.
 
 `400`, `401`, `403`, `404`, `413`, and `415` are **permanent**; the Origin
 **MUST NOT** retry the same envelope. `408`, `425`, `429`, and `5xx` are
@@ -561,8 +572,9 @@ On accepting an envelope the Destination **MUST**:
 2. For each recipient in `recipients`, resolve or create the target User account
    within the Destination's tenancy. Onboarding policy for
    unknown-but-acceptable recipients is implementation-defined and out of scope
-   for this document; Destinations that do not onboard **MUST** respond
-   `404 no_recipients`.
+   for this document. A recipient that is neither resolved nor onboarded is
+   not delivered to: the Destination lists it in `refused_recipients` (§6.3),
+   or responds `404 no_recipients` when that leaves no recipient at all.
 3. Persist per-recipient delivery state (the specific table layout is out of
    scope; the federation identifiers **MUST** be retrievable so that reply
    correlation by `thread.federation_id` is possible).
@@ -570,7 +582,11 @@ On accepting an envelope the Destination **MUST**:
    is out of scope.
 
 On permanent failure (retry budget exhausted, or a permanent 4xx received), the
-Origin **MUST** generate a local bounce back to the sender:
+Origin **MUST** generate a local bounce back to the sender. On a `202` whose
+`refused_recipients` is not empty, the Origin **MUST** generate one for those
+recipients, with the `error` code each entry carries; it **MUST** ignore any
+entry whose address was not in the envelope's `recipients`, so a Destination
+cannot cause bounces for addresses it was never sent. In either case:
 
 - The bounce is a local `message` row inserted into the sender's inbox, under
   the same `customer` tenancy as the original sender.
@@ -1272,6 +1288,9 @@ encoding is deterministic given the inputs.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §6.3: a `202` may list `refused_recipients` with the code
+    `unknown_recipient`, for an envelope delivered to some recipients but not
+    others. §6.5: the Origin bounces those recipients.
   - §8.2: every non-Registrar Domain **MUST** have a Default Registrar, so an
     Origin always has a Registrar for an External address. Replaces the rule
     that an Origin with no Registrar refuses the send at compose time. Added to
