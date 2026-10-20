@@ -1,9 +1,10 @@
 # RFC: Webmail-Federation Protocol
 
 - **Name:** Webmail-Federation
-- **Version:** 0.2 (draft)
-- **Status:** Draft — not yet implemented
-- **Date:** 2026-04-23
+- **Version:** 0.3 (draft); protocol version `0.2` on the wire (§10)
+- **Status:** Draft. The Basic tier is implemented in `webmail-server`; the
+  Registrar extension is not.
+- **Date:** 2026-10-21
 - **Editor:** Maurits van der Schee
 
 ## Abstract
@@ -1213,6 +1214,11 @@ receiver (with no side effects). Breaking changes **MUST** be expressed as a new
 `version` string; an implementation that cannot speak the new version continues
 to speak the old.
 
+This document's revision is not the protocol version. Revision 0.3 still
+specifies protocol version `0.2`, because everything it adds is an optional
+field or a rule a 0.2 peer is not affected by. A Domain implementing this
+revision advertises `["0.2"]`.
+
 ## 11. Conformance
 
 A **Basic Webmail-Federation Domain** **MUST** implement:
@@ -1369,14 +1375,14 @@ Which in descriptor form is:
 POST /api/v1/federation/inbound HTTP/1.1
 Host: webmail.example.com
 Content-Type: application/json; charset=utf-8
-Content-Length: 37
+Content-Length: 35
 Date: Thu, 23 Apr 2026 10:15:00 GMT
 X-Federation-Version: 0.2
 X-Federation-Sender: 103mail.com
 X-Federation-Nonce: AbCdEfGhIjKlMnOpQrStUw
 ```
 
-**Request body** (exact bytes, 37 bytes, no trailing newline):
+**Request body** (exact bytes, 35 bytes, no trailing newline):
 
 ```
 {"version":"0.2","envelope_id":"x"}
@@ -1386,7 +1392,7 @@ X-Federation-Nonce: AbCdEfGhIjKlMnOpQrStUw
 request the body is the full envelope of §5.2.)
 
 **Signing input** (concatenation per §6.2; UTF-8 with explicit 0x0A separators,
-total length = sum of part lengths):
+104 bytes in total):
 
 ```
 "0.2" 0x0A "103mail.com" 0x0A "AbCdEfGhIjKlMnOpQrStUw" 0x0A
@@ -1394,41 +1400,53 @@ total length = sum of part lengths):
 body_bytes
 ```
 
+**Signature.** Ed25519 is deterministic, so the inputs above give exactly one
+signature:
+
+```
+X-Federation-Signature: ed25519:yIBEYJueERqYiye1shfinI0NfcnbsyC/UZxRDPcZMnPNZFm3dL6hiy7/jYj9PSUXVq3t1AXLSD/4Z2KEV8mqBQ==
+```
+
 An implementation is conformant if, given the private key above and the request
-above, it produces an `X-Federation-Signature` header that a verifier using the
-listed public key successfully validates. Implementations **SHOULD** publish
-their computed signature bytes in test logs during development; the exact base64
-encoding is deterministic given the inputs.
+above, it produces exactly this `X-Federation-Signature` header, and if its
+verifier accepts it with the listed public key and rejects it once any byte of
+the signing input changes.
 
 ## Appendix C. Change log
 
-- **Unreleased:**
-  - §6.4: a message that used up its retry budget is sent again as a new
-    envelope once the Destination answers, so its members get no gap.
-  - §5.6 new: joining, leaving and refusal each travel as a message in the
-    thread; optional `thread.left` carries a departure from the member's own
-    Domain, and an invitation brings the history where the Domain holds it.
-  - §5.3, §6.5: a Domain that refuses an address tells the thread's other
-    Domains with a message from its `mailer-daemon` carrying optional
-    `thread.refused`; a Destination accepts it only for addresses on the
-    sender's own domain.
-  - §5.3, §6.5: an address refused as unknown is not a member of the thread;
-    the Destination does not record it and the Origin stops sending to it.
-  - §5.5 new: every Domain shows a thread's messages in one order, by
-    `message.sent_at` in whole seconds and then `message.federation_id`, which
-    is assigned when the message is written; `sent_at` is taken as given.
+- **0.3 (2026-10-21):** still protocol version `0.2` on the wire (§10): every
+  change is an optional field or a rule about behaviour.
+  - §4.1.1 new: a Domain may be a subdomain; its Federation hostname is
+    `webmail.` prepended to its full DNS domain, and it shares nothing with its
+    parent.
   - §5.2, §5.3: optional `thread.members` carries a thread's membership across
     Domains, so `recipients` can hold only the Destination's own addresses as
     §5.3 requires while a reply still reaches every member.
   - §5.3, §8.2: a non-Registrar refuses any recipient not on its own domain
     with `400 not_registrar`, whether it is External or on another Domain.
+  - §5.3, §6.5: an address refused as unknown is not a member of the thread;
+    the Destination does not record it and the Origin stops sending to it. The
+    refusing Domain tells the thread's other Domains with a message from its
+    `mailer-daemon` carrying optional `thread.refused`, which a Destination
+    accepts only for addresses on the sender's own domain.
+  - §5.5 new: every Domain shows a thread's messages in one order, by
+    `message.sent_at` in whole seconds and then `message.federation_id`, which
+    is assigned when the message is written; `sent_at` is taken as given.
+  - §5.6 new: joining, leaving and refusal each travel as a message in the
+    thread; optional `thread.left` carries a departure from the member's own
+    Domain, and an invitation brings the history where the Domain holds it.
   - §6.3: a `202` may list `refused_recipients` with the code
     `unknown_recipient`, for an envelope delivered to some recipients but not
     others. §6.5: the Origin bounces those recipients.
+  - §6.4: a message that used up its retry budget is sent again as a new
+    envelope once the Destination answers, so its members get no gap. The
+    timeout bounce says so.
   - §8.2: every non-Registrar Domain **MUST** have a Default Registrar, so an
     Origin always has a Registrar for an External address. Replaces the rule
     that an Origin with no Registrar refuses the send at compose time. Added to
     the Basic tier in §11 and defined in §1.3.
+  - Appendix B: the vector's body is 35 bytes, not 37, and the vector now gives
+    the exact signature it produces.
 - **0.2 (2026-04-23):**
   - Signature: dropped pre-SHA-256, added header coverage, specified 0x0A
     separators and exact byte encodings. Ed25519 signs directly.

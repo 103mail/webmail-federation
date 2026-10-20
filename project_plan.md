@@ -67,14 +67,15 @@ Sizes are rough: S under a week, M one to three weeks, L more.
 
 - Rewrite `project_overview.md` to describe the current trio: Go server, React
   client, this repo. Done (2026-10-21).
-- Add §4.1.1 to RFC Appendix C as 0.3 and bump the version header. Still open:
-  Appendix C now has an "Unreleased" section (§5.5, §5.6, `thread.members`,
-  `thread.refused`, `not_registrar`, Default Registrar), but §4.1.1 is not in
-  it and the header still says 0.2.
+- Add §4.1.1 to RFC Appendix C as 0.3 and bump the version header. Done
+  (2026-10-21): the document is revision 0.3, with §4.1.1 and everything since
+  in its change log, and still specifies protocol version `0.2` on the wire,
+  since every change is optional or a rule about behaviour (§10).
 - Update `webmail-server/CLAUDE.md` (no longer greenfield, client no longer on
   mocks, sibling path is `../webmail-legacy`). Done (2026-10-21).
 - Point `project_design.md` "Context" at the Go implementation and mark steps
-  1-6 as done.
+  1-6 as done. Done (2026-10-21); step 7 is marked partly done, with inbound
+  rate limiting still open.
 
 ### M1: Basic tier, production grade (M)
 

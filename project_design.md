@@ -2,7 +2,23 @@
 
 ## Context
 
-### webmail (backend)
+The design below is built, as far as the Basic tier goes, in Go:
+
+- **`webmail-server`** implements migration steps 1 to 6 and most of 7 (see
+  the end of this document): domain config instead of the singleton, the
+  well-known descriptor with a key per Domain, the local/remote fan-out with
+  a `federation_outbox` and a retry worker, the signed inbound endpoint,
+  bounces, and the later RFC 0.3 rules (thread members, refusals, departures,
+  message order, backfill). It runs on PostgreSQL in production and SQLite
+  under test (ADR 19), and `deploy/` runs four federating Domains locally.
+- **`webmail-client`** runs on that API, configured per Domain through
+  `/config.json`, with chat over WebSocket.
+- **`webmail-e2e`** holds the stories that prove it, against the local stack.
+
+103mail.com production still runs on the PHP monolith until the cutover (M2 in
+the plan). What follows is that monolith as it was when this design started.
+
+### webmail-legacy (backend, where this design started)
 
 PHP / MintyPHP. Schema already has a `domain` table (`id`, `name`, `customer_id`) but `EmailClient::getDefaultDomain()` treats it as a singleton (`SELECT name FROM domain WHERE customer_id IS NULL LIMIT 1`).
 
@@ -14,9 +30,9 @@ Mail flow — no SMTP:
 
 REST API lives under `/api/v1/email/...` with Bearer tokens from the `token` table. Compose hits `POST /thread/{folderId}` with `{ subscribers: [emails], subject, body, attachments }`.
 
-### webmail-client (frontend)
+### webmail-client (frontend, where this design started)
 
-React 19 + MUI, currently mock-only. `103mail.com` is hardcoded in `AuthFlow.tsx`, the `/103mail.svg` asset, and all mock data (`@103mail.com` everywhere). No real API client yet — clean slate to introduce federation awareness.
+React 19 + MUI, then mock-only. `103mail.com` is hardcoded in `AuthFlow.tsx`, the `/103mail.svg` asset, and all mock data (`@103mail.com` everywhere). No real API client yet — clean slate to introduce federation awareness.
 
 ---
 
@@ -1106,13 +1122,16 @@ A single-registrar deployment (only 103mail) is this protocol with an empty `reg
 
 ## Migration steps, in order
 
-1. **Client**: introduce `/config.json` + `DomainContext`, strip literal `103mail.com` from source.
-2. **Backend**: move default domain to domain config; add `domain.backend_url` / `public_key` / `is_local`.
-3. **Backend**: add well-known discovery route + keypair generation on first boot.
-4. **Backend**: split `addMessageToSubscribers` into local/remote branches; add outbound `FederationClient` + `federation_outbox` table + retry worker.
-5. **Backend**: add inbound `FederationApi` with signature verification.
-6. **Spin up** a second domain (e.g. `example.com`) in staging, verify round-trip: compose from 103mail → inbox on example.com → reply federates back.
-7. **Harden**: rate-limit inbound per peer, cap attachment size, bounce semantics (`federation_outbox.status = permanent_failure` generates a local bounce message to sender).
+Steps 1 to 6 are done in `webmail-server` and `webmail-client`. Of step 7,
+bounces and size caps are done; rate-limiting inbound per peer is not.
+
+1. **Client** (done): introduce `/config.json` + `DomainContext`, strip literal `103mail.com` from source.
+2. **Backend** (done): move default domain to domain config; add `domain.backend_url` / `public_key` / `is_local`.
+3. **Backend** (done): add well-known discovery route + keypair generation on first boot.
+4. **Backend** (done): split `addMessageToSubscribers` into local/remote branches; add outbound `FederationClient` + `federation_outbox` table + retry worker.
+5. **Backend** (done): add inbound `FederationApi` with signature verification.
+6. **Spin up** (done, four Domains locally) a second domain (e.g. `example.com`) in staging, verify round-trip: compose from 103mail → inbox on example.com → reply federates back.
+7. **Harden** (partly done): rate-limit inbound per peer, cap attachment size, bounce semantics (`federation_outbox.status = permanent_failure` generates a local bounce message to sender).
 8. **Schema (all domains)**: `user.real_email` + `real_email_verified_at` + unique `(domain_id, real_email)`.
 9. **Registration (all domains)**: require real_email at signup; SMTP double-opt-in; gate account activation on verification.
 10. **Notifications (all domains)**: wire `sent_email` `To:` to `user.real_email`.
