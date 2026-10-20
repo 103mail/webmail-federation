@@ -429,8 +429,8 @@ Destination's addresses in `recipients`, while all of them carry the same
 `thread.members` as the thread's membership, so that a reply written there is
 sent to every member on every Domain. It adds members it did not know of and
 removes none on the strength of an envelope. An envelope whose `recipients` are
-not all on the Destination's DNS domain is rejected with `400
-schema_violation`, unless the Destination is a Registrar (§8.2).
+not all on the Destination's DNS domain is rejected with `400 not_registrar`,
+unless the Destination is a Registrar (§8.2).
 
 Unknown fields in the envelope **MUST** be ignored by the Destination. No
 unknown field may carry side effects.
@@ -692,9 +692,13 @@ advertises `"registrar": true`:
 - The Destination is responsible for resolving or onboarding each External
   recipient. Internal resolution semantics are out of scope.
 
-An Origin **MUST NOT** include External addresses in `recipients` when sending
-to a non-Registrar Destination. Such an envelope, if received, **MUST** be
-rejected with `400 not_registrar`.
+An Origin **MUST NOT** include any address that is not on the Destination's DNS
+domain in `recipients` when sending to a non-Registrar Destination, whether it
+is an External address or an address on another Domain. Such an envelope, if
+received, **MUST** be rejected with `400 not_registrar`. One code covers both
+because a Destination cannot tell them apart without discovering the other
+domain, and the Origin's mistake is the same: only a Registrar accepts
+addresses that are not its own.
 
 An envelope mixing Destination-domain recipients and External recipients is
 valid only when the Destination is a Registrar. An Origin **MAY** split by
@@ -1309,6 +1313,8 @@ encoding is deterministic given the inputs.
   - §5.2, §5.3: optional `thread.members` carries a thread's membership across
     Domains, so `recipients` can hold only the Destination's own addresses as
     §5.3 requires while a reply still reaches every member.
+  - §5.3, §8.2: a non-Registrar refuses any recipient not on its own domain
+    with `400 not_registrar`, whether it is External or on another Domain.
   - §6.3: a `202` may list `refused_recipients` with the code
     `unknown_recipient`, for an envelope delivered to some recipients but not
     others. §6.5: the Origin bounces those recipients.
