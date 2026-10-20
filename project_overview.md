@@ -1,17 +1,61 @@
 ---
 name: webmail-federation project overview
-description: What the webmail-federation repo is for and its two sibling repos (webmail backend, webmail-client frontend)
+description: What the webmail-federation repo is for and how it relates to its sibling repos (Go server, React client, e2e stories, PHP legacy)
 type: project
-originSessionId: 5d5787c3-6720-4400-8326-1aced9a9e8fb
 ---
-webmail-federation is a greenfield project (only .git as of 2026-04-18) meant to design and coordinate federation between multiple deployments of the `webmail` backend, so domains like 103mail.com, example.com, etc. can share one client bundle while still exchanging mail.
 
-**Why:** The existing `webmail` PHP backend at /home/maurits/projects/webmail is hardcoded to a single default domain (103mail.com) and `webmail-client` at /home/maurits/projects/webmail-client has 103mail branding baked in. Goal is multi-tenant: one client, per-domain backends, federated delivery.
+webmail-federation holds the protocol and design for federating independently
+operated Webmail Domains, so domains like 103mail.com and example.com can share
+one client bundle while still exchanging mail. It contains the RFC
+(`project_rfc.md`, normative for anything that crosses a Domain boundary), the
+design and migration narrative (`project_design.md`) and the plan with current
+status (`project_plan.md`). Status as of 2026-10-21.
 
-**How to apply:** When the user asks about federation, multi-domain, or "103mail and other domains", think in terms of the trio: webmail (PHP backend, per-domain instance), webmail-client (React/MUI, one bundle), webmail-federation (design + glue). Don't treat the three repos in isolation.
+**Why:** 103mail.com production still runs on the PHP monolith, which is
+single-domain and will never federate. The Go backend replaces it and
+implements the Basic tier of the RFC, so 103mail.com can federate once it is
+cut over, and later become the first Registrar.
+
+**How to apply:** When the user asks about federation, multi-domain, or "103mail
+and other domains", think across the repos under `~/projects/webmail/`, not
+this one in isolation:
+
+- `webmail-server`: Go backend (ADR 2 supersedes PHP). PostgreSQL in
+  production, SQLite under test (ADR 19). Implements the Basic tier (ADR 17)
+  and advertises `registrar: false`. Federation code is in
+  `internal/federation`, the mail side of it in `internal/email`.
+- `webmail-client`: React/MUI SPA, one bundle for all Domains. Real API client,
+  per-Domain `/config.json` and `DomainContext`, chat over WebSocket. No
+  federation-specific UI yet.
+- `webmail-e2e`: end-to-end stories per milestone, run with godog against
+  several real Domains through the public API only. A milestone is done when
+  its stories are green.
+- `webmail-legacy`: the PHP monolith running 103mail.com today. Reference for
+  behaviour and schema only; must not be extended.
+- `webmail-website`: Hugo marketing site for 103mail.com.
+- Tools outside this folder: `../dbml-tools` (schema in DBML, SQL and
+  migrations) and `ws2api` (WebSocket proxy for chat).
 
 **Key architectural facts to remember:**
-- webmail does NOT send SMTP. It writes g_thread/g_message once and fans out per-subscriber thread/message rows in its own DB. Only a metadata-only notification (sent_email table) goes outside.
-- Schema already has a `domain` table but code treats it as singleton via `EmailClient::getDefaultDomain()`.
-- Unknown recipients get auto-onboarded via `addCustomer()` with a random 7-digit @103mail.com alias — this shortcut is wrong under federation and must split into local-vs-remote branches.
-- webmail-client is currently mock-only; no real API client yet, so federation-aware config can be introduced cleanly.
+
+- No message content ever travels by SMTP (ADR 4). A message is written once as
+  canonical `g_thread`/`g_message` rows with per-user projections (ADR 3);
+  outbound email carries only metadata and a secure link, via Amazon SES (ADR
+  15/16).
+- Between Domains, delivery is a signed HTTPS envelope: discovery at
+  `webmail.<domain>/.well-known/webmail-federation`, TOFU-pinned Ed25519 keys,
+  an outbox worker with a 72-hour retry budget and local bounces, and a
+  `federation_id` (UUIDv7) on every thread and message.
+- Each Domain speaks only for its own addresses. Unknown addresses on a local
+  Domain are refused, not auto-onboarded (the old `{7digit}@103mail.com` path
+  is gone in Go), and a non-Registrar answers `400 not_registrar` for
+  recipients on any other domain. Peer-refused recipients are bounced and the
+  thread is told about them.
+- Every non-Registrar Domain must have a Default Registrar (RFC §8.2). Reaching
+  people without a federated home through a Registrar is specified but not
+  built yet.
+- `deploy/` in `webmail-server` runs four Domains locally (103mail.com,
+  example.com, mail.acme.test and its unrelated parent acme.test), each with
+  its own database, API process and hostname. Federation works there; nothing
+  federates in staging or production yet.
+- Chat and calendar do not federate; the RFC covers mail only.
