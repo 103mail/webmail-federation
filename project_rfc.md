@@ -645,6 +645,17 @@ Retry schedule for transient failures:
 Network-level errors (connection refused, TLS failure, connect timeout, read
 timeout) are treated as transient.
 
+**Backfill.** A message whose envelope used up the budget without a response
+is not abandoned. The Destination may only have been unreachable, and its
+members would otherwise have a gap in the thread for good. The Origin
+**SHOULD** keep such a message and, once the Destination answers again (for
+example, its peer descriptor can be fetched), send it again: a new envelope
+with a new `envelope_id`, the same `thread` and `message`, and the same
+`recipients`. The new envelope has a budget of its own. The Destination stores
+the message in its place in the thread (§5.5), so it may appear above
+messages that reached it earlier, and **SHOULD** make it noticeable as for any
+late message. An envelope refused with a permanent `4xx` is not sent again.
+
 ### 6.5 Destination processing and bounce semantics
 
 On accepting an envelope the Destination **MUST**:
@@ -693,7 +704,8 @@ In either case:
 - Body: a plain-text summary identifying (a) the failed recipient addresses and
   their Destination Domain, (b) the terminal HTTP status and `error` code
   received (or `"timed_out"` if the budget was exhausted), (c) the `envelope_id`
-  for correlation.
+  for correlation, and (d) for `"timed_out"`, that the message will be sent
+  again when the Destination can be reached (§6.4).
 - `sender_email`: a reserved local-part `mailer-daemon@{origin_domain}`.
 - The bounce is local — it is **NOT** a federated envelope and **MUST NOT**
   leave the Origin Server.
@@ -1391,6 +1403,8 @@ encoding is deterministic given the inputs.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §6.4: a message that used up its retry budget is sent again as a new
+    envelope once the Destination answers, so its members get no gap.
   - §5.6 new: joining, leaving and refusal each travel as a message in the
     thread; optional `thread.left` carries a departure from the member's own
     Domain, and an invitation brings the history where the Domain holds it.
