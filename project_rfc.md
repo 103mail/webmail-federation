@@ -417,7 +417,7 @@ Lengths below are maximum decoded byte lengths of the UTF-8 string. Receivers
 | `message.sender_name`   | string | no       | If present, max 255 bytes.                                                                                                                                                                                                                                          |
 | `message.body`          | string | yes      | Plain-text body. May be empty. Max 1048576 bytes (1 MiB).                                                                                                                                                                                                           |
 | `message.body_html`     | string | no       | HTML body. Max 4194304 bytes (4 MiB).                                                                                                                                                                                                                               |
-| `message.sent_at`       | string | yes      | Same rules as `origin_sent_at`.                                                                                                                                                                                                                                     |
+| `message.sent_at`       | string | yes      | Same rules as `origin_sent_at`. Orders the thread (§5.5).                                                                                                                                                                                                                                                                |
 | `attachments`           | array  | yes      | 0–64 entries. See §7 for attachment field rules.                                                                                                                                                                                                                    |
 | `recipients`            | array  | yes      | 1–100 entries. Each entry is an addr-spec. **MUST** either all share the Destination's DNS domain, or the Destination **MUST** be a Registrar (§8.2).                                                                                                               |
 
@@ -446,6 +446,37 @@ Destinations **MUST** retain the `(sender, envelope_id)` dedup record for at
 least 96 hours from first acceptance. This exceeds the §6.4 retry budget by 24
 hours to cover clock skew and re-queue edge cases. Origins **MUST NOT** issue
 retries after the 72-hour budget has elapsed.
+
+### 5.5 Message order
+
+The messages of a thread have one order, the same on every Domain: ascending by
+`message.sent_at` truncated to whole seconds, then by `message.federation_id`
+compared as lowercase strings. Every Domain **MUST** present a thread's
+messages in this order, so that every member reads the same conversation
+however and whenever each message reached them. Comparing whole seconds keeps
+the order the same between implementations that store time at different
+precisions.
+
+- The Origin **MUST** set `message.sent_at` from its own clock when the message
+  is written, and **MUST** assign `message.federation_id` at the same moment,
+  not later. A UUIDv7 begins with its creation time in milliseconds, so the
+  identifier orders messages written within the same second, and it never
+  changes.
+- A Destination takes `message.sent_at` as given and **MUST NOT** replace it
+  with the time it received the message, whether it lies in the past (an
+  envelope may legitimately arrive up to 72 hours after it was written, §6.4)
+  or ahead of the Destination's own clock.
+- A message that arrives late is placed at its send time, which may be above
+  messages that reached the Destination before it. Implementations **SHOULD**
+  make such a message noticeable to the reader, for example by marking it
+  unread.
+
+The order rests on each Origin's clock, so two messages written seconds apart
+on different Domains can be read in a different order than they were written,
+but every member reads the same one. A Domain whose clock is wrong, or that
+dates its own messages earlier or later on purpose, moves them up or down a
+thread. That changes only the order a conversation is read in, never who wrote
+what.
 
 ## 6. Inbound transfer
 
@@ -1310,6 +1341,9 @@ encoding is deterministic given the inputs.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §5.5 new: every Domain shows a thread's messages in one order, by
+    `message.sent_at` in whole seconds and then `message.federation_id`, which
+    is assigned when the message is written; `sent_at` is taken as given.
   - §5.2, §5.3: optional `thread.members` carries a thread's membership across
     Domains, so `recipients` can hold only the Destination's own addresses as
     §5.3 requires while a reply still reaches every member.
