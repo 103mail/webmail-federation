@@ -37,8 +37,9 @@ Known gaps recorded in ADR 17:
 - No inbound rate limiting (RFC §9.10).
 - Own-key rotation is a flag day: we follow peers' `previous_public_keys` but
   cannot publish our own.
-- `in_reply_to` points at the thread, not the message, so branching replies are
-  not expressible.
+- `in_reply_to` points at the thread, not the message. Decided (2026-10-21):
+  that is intended, not a gap. A reply belongs to the thread, which is read in
+  one order (RFC §5.5); there are no branching replies.
 - Chat and calendar are not federated at all; the RFC only covers mail.
 
 ## 2. Goal and milestones
@@ -89,8 +90,6 @@ Server:
 - Publish `previous_public_keys` for our own Domains: support a list of keys per
   Domain in `federation.json`, sign with the newest, keep old ones in the
   descriptor for the 48h window (RFC §9.5). Write a runbook for rotation.
-- Message-level `in_reply_to` (carry the replied-to message's `federation_id`),
-  keeping thread correlation as fallback.
 - Subdomain Domains (RFC §4.1.1): add tests for `mail.example.com`-style
   Domains. Decide whether refusing a Domain literally named `webmail.*`
   (`internal/federation/federation.go:151`) is intended, and say so in the RFC

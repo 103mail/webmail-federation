@@ -479,6 +479,10 @@ precisions.
   make such a message noticeable to the reader, for example by marking it
   unread.
 
+A reply belongs to the thread, not to a message: nothing in an envelope says
+which earlier message it answers, and `thread.in_reply_to` names a thread.
+A thread is one conversation in one order, read the same by every member.
+
 The order rests on each Origin's clock, so two messages written seconds apart
 on different Domains can be read in a different order than they were written,
 but every member reads the same one. A Domain whose clock is wrong, or that
@@ -1340,7 +1344,7 @@ emits its notifications linking back to `https://webmail.example.com`.
 
 Carol replies. Her Origin Domain (`example.com`) issues a new envelope back to
 `103mail.com` with `thread.federation_id` set to the value from A.1 and
-`thread.in_reply_to` equal to the original message's `federation_id`.
+`thread.in_reply_to` equal to that same thread `federation_id`.
 `103mail.com` matches by `thread.federation_id` and appends to the existing
 thread.
 
@@ -1414,6 +1418,11 @@ the signing input changes.
 
 ## Appendix C. Change log
 
+- **Unreleased:**
+  - §5.5: a reply belongs to the thread, not to a message; there is no link
+    from a reply to the message it answers.
+  - Appendix A.3 corrected: `thread.in_reply_to` is the thread's
+    `federation_id`, as §5.3 says, not the original message's.
 - **0.3 (2026-10-21):** still protocol version `0.2` on the wire (§10): every
   change is an optional field or a rule about behaviour.
   - §4.1.1 new: a Domain may be a subdomain; its Federation hostname is

@@ -401,7 +401,7 @@ X-Federation-Signature: ...
   "origin_sent_at":"2026-04-18T10:32:00Z",
   "thread":  { "federation_id": "{same g_thread.federation_id as in §10}",
                "subject":       "Hello from 103mail",
-               "in_reply_to":   "{§10 message.federation_id}" },
+               "in_reply_to":   "{same g_thread.federation_id}" },
   "message": { "federation_id": "{new uuidv7}",
                "sender_email":  "bob@example.com",
                "sender_name":   "Bob",
@@ -416,7 +416,7 @@ X-Federation-Signature: ...
 Two things to note:
 
 - `thread.federation_id` is **the same value** that 103mail generated when Alice first composed in §10 Step B. It was carried in the original envelope, stored on example.com's `g_thread`, and is now echoed back. This is how the reply correlates to the existing thread on both sides.
-- `thread.in_reply_to` references the specific message being replied to (§10's `g_message.federation_id`) — optional for threading but useful for quoting / UI.
+- `thread.in_reply_to` names the thread again, not the message Bob is answering. A reply belongs to the thread, which every member reads in one order (RFC §5.5); there is no reply-to-message link.
 
 **Step E — 103mail backend verifies and appends.** The 103mail backend:
 
