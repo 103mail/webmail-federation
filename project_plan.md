@@ -1,6 +1,6 @@
 # Webmail Federation: Project Plan
 
-Status as of 2026-10-21, end of day. Covers the six repos under `~/projects/webmail/`. The
+Status as of 2026-10-21, end of day. Covers the seven repos under `~/projects/webmail/`. The
 RFC (`project_rfc.md`) is the normative spec for anything that crosses a Domain
 boundary, and the design doc (`project_design.md`) is the migration narrative.
 This file only adds the order of work and where each part currently stands.
@@ -9,12 +9,13 @@ This file only adds the order of work and where each part currently stands.
 
 | Repo                 | Role                                         | State                                                                                                                                                                                                                                                                                                                                                                 |
 | -------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `webmail-federation` | RFC v0.2 + design + overview                 | RFC revision 0.3, tagged `rfc-0.3` (protocol version 0.2 on the wire), complete for the Basic and Registrar tiers. Since 0.3: replies belong to the thread (§5.5), and messages from non-members of a thread are refused with `425 not_a_member` (§5.6, §6.3). Overview and design are current. |
-| `webmail-server`     | Go backend, replaces the PHP side            | Implements the **Basic tier** (ADR 17, hardened in ADR 21): discovery + TOFU, Ed25519 signing, envelopes, inline attachments, outbox worker with 72h retry, backfill once a peer is back, and local bounces carrying the peer's error code. Attachment limits on both sides, non-members refused, own-key rotation with a 48h window, Appendix B vector tested, inbound rate limiting per peer Domain. PostgreSQL in production, SQLite under test (ADR 19). Advertises `registrar: false`. The compose stack in `deploy/` federates four Domains plus the scripted peer `peer.test`, with a fault proxy, per-story config overrides, a movable clock and read-only controls (ADR 20). |
+| `webmail-federation` | RFC + design + plan + overview               | RFC revision 0.3, tagged `rfc-0.3` (protocol version 0.2 on the wire), complete for the Basic and Registrar tiers. Since 0.3: replies belong to the thread (§5.5), and messages from non-members of a thread are refused with `425 not_a_member` (§5.6, §6.3). Overview and design are current. |
+| `webmail-server`     | Go backend, replaces the PHP side            | Implements the **Basic tier** (ADR 17, hardened in ADR 21): discovery + TOFU, Ed25519 signing, envelopes, inline attachments, outbox worker with 72h retry, backfill once a peer is back, and local bounces carrying the peer's error code. Attachment limits on both sides, non-members refused, own-key rotation with a 48h window, Appendix B vector tested, inbound rate limiting per peer Domain. PostgreSQL in production, SQLite under test (ADR 19). Advertises `registrar: false`. The OpenAPI spec of record now lives here (`docs/openapi/v1/`, moved from the legacy repo and extended with the federation, chat-session, SES webhook and thread move/leave routes), and `openapi_test.go` fails when a served route is missing from it or the reverse. |
 | `webmail-client`     | React/MUI SPA, one bundle for all Domains    | Real API client, `/config.json` + `DomainContext` per Domain, chat over WebSocket. No federation-specific UI yet (remote recipient marking, bounce rendering).                                                                                                                                                                                                        |
-| `webmail-legacy`     | PHP monolith, current 103mail.com production | Reference for behaviour and schema only (ADR 2). Single-domain, `{7digit}@103mail.com` auto-onboarding. Must not be extended.                                                                                                                                                                                                                                         |
+| `webmail-legacy`     | PHP monolith, current 103mail.com production | Reference for behaviour and schema only (ADR 2). Single-domain, `{7digit}@103mail.com` auto-onboarding. Must not be extended. No longer holds the OpenAPI spec.                                                                                                                                                                                                       |
+| `webmail-deploy`     | Local compose stack (moved out of `webmail-server/deploy`) | Four federated Domains plus the scripted peer `peer.test`, with a fault proxy, mail sink, per-story config overrides, a movable clock and read-only controls (ADR 20). `docker compose up` alone: a setup service makes certificates and keys, and each Domain is at `http://localhost:8001` to `8004`, so no `/etc/hosts` entries or trusted CA. Federation still runs over HTTPS between the real hostnames on the federation network. |
 | `webmail-website`    | Hugo marketing site for 103mail.com          | Says nothing about federation, own domains, or operators.                                                                                                                                                                                                                                                                                                             |
-| `webmail-e2e`        | End-to-end stories per milestone (godog)     | Stories for M1-M6 written. M1 stories 01-09 green on a virtual clock (about 4 minutes for the suite), the rate-limit scenarios of stories 04 and 08 included. |
+| `webmail-e2e`        | End-to-end stories per milestone (godog)     | Stories for M1-M6 written. M1 stories 01-09 green on a virtual clock (about 4 minutes for the suite), the rate-limit scenarios of stories 04 and 08 included. The suite runs in a container on the stack's network, so no `/etc/hosts` entries are needed. Committed: it brings up its own stack (`stack/`, from four images, no host ports). Uncommitted work points it at `../webmail-deploy` instead; which of the two stays is open. |
 
 Design migration steps (`project_design.md`, "Migration steps") mapped to
 reality:
@@ -23,7 +24,7 @@ reality:
 | ----- | -------------------------------------------------------- | --------------------------------------------------- |
 | 1     | Client `/config.json`, no hardcoded domain               | Done                                                |
 | 2-5   | Domain config, discovery, fan-out split, outbox, inbound | Done in Go (not in PHP, by design)                  |
-| 6     | Two-domain round-trip                                    | Done in local compose stack (four Domains and peer.test), not in staging |
+| 6     | Two-domain round-trip                                    | Done in the local compose stack (`webmail-deploy`, four Domains and peer.test), not in staging |
 | 7     | Harden: rate limits, caps, bounces                       | Done: caps, bounces and inbound rate limiting       |
 | 8-10  | Real-email addressing on all Domains                     | Not started                                         |
 | 11-14 | Registrar: shadows, claim, `claim-by-real-email`         | Not started (schema has `is_registrar` column only) |
@@ -128,7 +129,9 @@ This is the precondition for federation in production, since PHP will never
 federate.
 
 - Finish the parity check from ADR 14 (byte-identical JSON on shared endpoints;
-  calendar is the known exception).
+  calendar is the known exception). The OpenAPI spec now lives in
+  `webmail-server` and is tested against its routes (2026-10-21), so parity is
+  checked against that spec rather than the copy in `webmail-legacy`.
 - Data migration rehearsal on a production dump with `dbml-tools migrate`,
   including the `g_attendee.will_attend` type change.
 - Cut over: Go API + worker, `webmail-client` bundle, ws2api for chat, SES/SNS
@@ -248,6 +251,10 @@ signup on the production backend.
   operates; find a second operator early.
 
 ## 6. Open decisions
+
+- One local stack or two: should `webmail-e2e` keep its own image-only stack
+  (runs beside a development stack) or use `webmail-deploy` (one place to
+  maintain)? The working tree of `webmail-e2e` currently does the latter.
 
 - Who operates the first external peer Domain for M3?
 - Does 103mail.com become the Default Registrar for the network, and under what

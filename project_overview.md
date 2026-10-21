@@ -23,7 +23,8 @@ this one in isolation:
 - `webmail-server`: Go backend (ADR 2 supersedes PHP). PostgreSQL in
   production, SQLite under test (ADR 19). Implements the Basic tier (ADR 17)
   and advertises `registrar: false`. Federation code is in
-  `internal/federation`, the mail side of it in `internal/email`.
+  `internal/federation`, the mail side of it in `internal/email`. The OpenAPI
+  spec of record is in `docs/openapi/v1/`, tested against the routes.
 - `webmail-client`: React/MUI SPA, one bundle for all Domains. Real API client,
   per-Domain `/config.json` and `DomainContext`, chat over WebSocket. No
   federation-specific UI yet.
@@ -33,6 +34,8 @@ this one in isolation:
 - `webmail-legacy`: the PHP monolith running 103mail.com today. Reference for
   behaviour and schema only; must not be extended.
 - `webmail-website`: Hugo marketing site for 103mail.com.
+- `webmail-deploy`: the local compose stack of federated Domains, moved out
+  of `webmail-server/deploy`.
 - Tools outside this folder: `../dbml-tools` (schema in DBML, SQL and
   migrations) and `ws2api` (WebSocket proxy for chat).
 
@@ -55,10 +58,10 @@ this one in isolation:
 - Every non-Registrar Domain must have a Default Registrar (RFC §8.2). Reaching
   people without a federated home through a Registrar is specified but not
   built yet.
-- `deploy/` in `webmail-server` runs four Domains locally (103mail.com,
+- `webmail-deploy` runs four Domains locally (103mail.com,
   example.com, mail.acme.test and its unrelated parent acme.test), each with
   its own database, API process and hostname, plus the scripted test peer
   peer.test, a fault proxy and a clock the stories move forward. Federation
-  works there and M1 stories 01-09 are green; nothing federates in staging or
-  production yet, and inbound rate limiting is the last M1 gap.
+  works there and M1 stories 01-09 are green, inbound rate limiting included;
+  nothing federates in staging or production yet.
 - Chat and calendar do not federate; the RFC covers mail only.
