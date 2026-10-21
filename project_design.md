@@ -1122,8 +1122,7 @@ A single-registrar deployment (only 103mail) is this protocol with an empty `reg
 
 ## Migration steps, in order
 
-Steps 1 to 6 are done in `webmail-server` and `webmail-client`. Of step 7,
-bounces and size caps are done; rate-limiting inbound per peer is not.
+Steps 1 to 7 are done in `webmail-server` and `webmail-client`.
 
 1. **Client** (done): introduce `/config.json` + `DomainContext`, strip literal `103mail.com` from source.
 2. **Backend** (done): move default domain to domain config; add `domain.backend_url` / `public_key` / `is_local`.
@@ -1131,7 +1130,7 @@ bounces and size caps are done; rate-limiting inbound per peer is not.
 4. **Backend** (done): split `addMessageToSubscribers` into local/remote branches; add outbound `FederationClient` + `federation_outbox` table + retry worker.
 5. **Backend** (done): add inbound `FederationApi` with signature verification.
 6. **Spin up** (done, four Domains locally) a second domain (e.g. `example.com`) in staging, verify round-trip: compose from 103mail → inbox on example.com → reply federates back.
-7. **Harden** (partly done): rate-limit inbound per peer, cap attachment size, bounce semantics (`federation_outbox.status = permanent_failure` generates a local bounce message to sender).
+7. **Harden** (done): rate-limit inbound per peer, cap attachment size, bounce semantics (`federation_outbox.status = permanent_failure` generates a local bounce message to sender).
 8. **Schema (all domains)**: `user.real_email` + `real_email_verified_at` + unique `(domain_id, real_email)`.
 9. **Registration (all domains)**: require real_email at signup; SMTP double-opt-in; gate account activation on verification.
 10. **Notifications (all domains)**: wire `sent_email` `To:` to `user.real_email`.

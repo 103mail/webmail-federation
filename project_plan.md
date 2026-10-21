@@ -10,11 +10,11 @@ This file only adds the order of work and where each part currently stands.
 | Repo                 | Role                                         | State                                                                                                                                                                                                                                                                                                                                                                 |
 | -------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `webmail-federation` | RFC v0.2 + design + overview                 | RFC revision 0.3, tagged `rfc-0.3` (protocol version 0.2 on the wire), complete for the Basic and Registrar tiers. Since 0.3: replies belong to the thread (§5.5), and messages from non-members of a thread are refused with `425 not_a_member` (§5.6, §6.3). Overview and design are current. |
-| `webmail-server`     | Go backend, replaces the PHP side            | Implements the **Basic tier** (ADR 17, hardened in ADR 21): discovery + TOFU, Ed25519 signing, envelopes, inline attachments, outbox worker with 72h retry, backfill once a peer is back, and local bounces carrying the peer's error code. Attachment limits on both sides, non-members refused, own-key rotation with a 48h window, Appendix B vector tested. PostgreSQL in production, SQLite under test (ADR 19). Advertises `registrar: false`. The compose stack in `deploy/` federates four Domains plus the scripted peer `peer.test`, with a fault proxy, per-story config overrides, a movable clock and read-only controls (ADR 20). No inbound rate limiting yet. |
+| `webmail-server`     | Go backend, replaces the PHP side            | Implements the **Basic tier** (ADR 17, hardened in ADR 21): discovery + TOFU, Ed25519 signing, envelopes, inline attachments, outbox worker with 72h retry, backfill once a peer is back, and local bounces carrying the peer's error code. Attachment limits on both sides, non-members refused, own-key rotation with a 48h window, Appendix B vector tested, inbound rate limiting per peer Domain. PostgreSQL in production, SQLite under test (ADR 19). Advertises `registrar: false`. The compose stack in `deploy/` federates four Domains plus the scripted peer `peer.test`, with a fault proxy, per-story config overrides, a movable clock and read-only controls (ADR 20). |
 | `webmail-client`     | React/MUI SPA, one bundle for all Domains    | Real API client, `/config.json` + `DomainContext` per Domain, chat over WebSocket. No federation-specific UI yet (remote recipient marking, bounce rendering).                                                                                                                                                                                                        |
 | `webmail-legacy`     | PHP monolith, current 103mail.com production | Reference for behaviour and schema only (ADR 2). Single-domain, `{7digit}@103mail.com` auto-onboarding. Must not be extended.                                                                                                                                                                                                                                         |
 | `webmail-website`    | Hugo marketing site for 103mail.com          | Says nothing about federation, own domains, or operators.                                                                                                                                                                                                                                                                                                             |
-| `webmail-e2e`        | End-to-end stories per milestone (godog)     | Stories for M1-M6 written. M1 stories 01-09 green on a virtual clock (about 3 minutes for the suite), except the rate-limit scenarios of stories 04 and 08, which wait on inbound rate limiting. |
+| `webmail-e2e`        | End-to-end stories per milestone (godog)     | Stories for M1-M6 written. M1 stories 01-09 green on a virtual clock (about 4 minutes for the suite), the rate-limit scenarios of stories 04 and 08 included. |
 
 Design migration steps (`project_design.md`, "Migration steps") mapped to
 reality:
@@ -24,7 +24,7 @@ reality:
 | 1     | Client `/config.json`, no hardcoded domain               | Done                                                |
 | 2-5   | Domain config, discovery, fan-out split, outbox, inbound | Done in Go (not in PHP, by design)                  |
 | 6     | Two-domain round-trip                                    | Done in local compose stack (four Domains and peer.test), not in staging |
-| 7     | Harden: rate limits, caps, bounces                       | Partly: caps and bounces done, rate limiting not    |
+| 7     | Harden: rate limits, caps, bounces                       | Done: caps, bounces and inbound rate limiting       |
 | 8-10  | Real-email addressing on all Domains                     | Not started                                         |
 | 11-14 | Registrar: shadows, claim, `claim-by-real-email`         | Not started (schema has `is_registrar` column only) |
 | 15-16 | Multi-registrar lookup and consolidation                 | Not started                                         |
@@ -34,7 +34,8 @@ Known gaps recorded in ADR 17:
 - ~~`g_subscription` lacks a unique `(g_thread_id, email)` index~~ Done
   (2026-10-20, index `thread_email`). Production data still has duplicates to
   clean up during the M2 migration.
-- No inbound rate limiting (RFC §9.10). In progress.
+- ~~No inbound rate limiting (RFC §9.10)~~ Done (2026-10-21): per peer Domain,
+  per minute and per day, answered with `429` and `Retry-After`.
 - ~~Own-key rotation is a flag day~~ Done (2026-10-21, ADR 21): retired keys
   are published for 48 hours, with a runbook.
 - `in_reply_to` points at the thread, not the message. Decided (2026-10-21):
@@ -75,8 +76,8 @@ Sizes are rough: S under a week, M one to three weeks, L more.
 - Update `webmail-server/CLAUDE.md` (no longer greenfield, client no longer on
   mocks, sibling path is `../webmail-legacy`). Done (2026-10-21).
 - Point `project_design.md` "Context" at the Go implementation and mark steps
-  1-6 as done. Done (2026-10-21); step 7 is marked partly done, with inbound
-  rate limiting still open.
+  1-6 as done. Done (2026-10-21); step 7 is marked done since inbound rate
+  limiting landed.
 
 ### M1: Basic tier, production grade (M)
 
@@ -86,7 +87,11 @@ Server:
   via `dbml-tools migrate`). Partly done: the index is in the schema
   (2026-10-20); cleaning production duplicates moves to the M2 migration.
 - Inbound rate limiting per peer Domain, answering `429` with `Retry-After` (RFC
-  §9.10). In progress (2026-10-21); stories 04 and 08 hold its scenarios.
+  §9.10). Done (2026-10-21): a peer's accepted envelopes are counted over the
+  last minute and the last day (120 and 20000 by default, `rateLimit` in
+  `federation.json`), and past either limit it is answered `429 rate_limited`
+  with `Retry-After` until the oldest falls out of the window. Replays are
+  answered whatever the rate. Stories 04 and 08 cover both sides.
 - Publish `previous_public_keys` for our own Domains: support a list of keys per
   Domain in `federation.json`, sign with the newest, keep old ones in the
   descriptor for the 48h window (RFC §9.5). Write a runbook for rotation. Done
@@ -112,8 +117,7 @@ Conformance and interop:
 - Scripted interop suite on the compose stack: send, reply, attachment, bounce
   on unknown recipient, peer down then up (retry), key rotation on one side,
   replayed envelope (dedup), stale `Date`. Done on the local stack
-  (2026-10-21): M1 stories 01-09 are green apart from the two rate-limit
-  scenarios. Running them against a second, independently operated stack is
+  (2026-10-21): M1 stories 01-09 are green, rate limits included. Running them against a second, independently operated stack is
   still open and belongs to M3.
 - Observability: outbox depth and age per `peer_domain`, inbound accept/reject
   counts by error code, bounce count. Alert on outbox age over a few hours.
