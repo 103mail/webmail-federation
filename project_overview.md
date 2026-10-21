@@ -50,12 +50,15 @@ this one in isolation:
   Domain are refused, not auto-onboarded (the old `{7digit}@103mail.com` path
   is gone in Go), and a non-Registrar answers `400 not_registrar` for
   recipients on any other domain. Peer-refused recipients are bounced and the
-  thread is told about them.
+  thread is told about them. Only members write to a thread: a peer cannot add
+  someone by listing them, and gets `425 not_a_member` (RFC §5.6).
 - Every non-Registrar Domain must have a Default Registrar (RFC §8.2). Reaching
   people without a federated home through a Registrar is specified but not
   built yet.
 - `deploy/` in `webmail-server` runs four Domains locally (103mail.com,
   example.com, mail.acme.test and its unrelated parent acme.test), each with
-  its own database, API process and hostname. Federation works there; nothing
-  federates in staging or production yet.
+  its own database, API process and hostname, plus the scripted test peer
+  peer.test, a fault proxy and a clock the stories move forward. Federation
+  works there and M1 stories 01-09 are green; nothing federates in staging or
+  production yet, and inbound rate limiting is the last M1 gap.
 - Chat and calendar do not federate; the RFC covers mail only.
