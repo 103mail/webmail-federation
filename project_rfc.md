@@ -116,6 +116,9 @@ Server      (physical deployment; process + database)
 - Permit Domains that advertise the Registrar role (§8) to resolve External
   addresses to Federation-enabled canonicals and route envelopes accordingly,
   without requiring a global registry.
+- Permit Domains that advertise chat (§14) to hold a chat between users on
+  different Domains, under the same authentication and the same no-SMTP
+  property as mail.
 
 ### 2.2 Non-goals
 
@@ -126,6 +129,8 @@ Server      (physical deployment; process + database)
   protocol.
 - End-to-end encryption or signing of message content for end-user verification.
   Signatures in this protocol authenticate Domain-to-Domain transport only.
+- Carrying typing indicators, presence, or edits to sent messages between
+  Domains (§14.6).
 - Cross-Domain address portability (a User at `alice@example.com` cannot retain
   that address when moving to `acme.io`). Note: Registrar "forwarder" aliases
   (§8.5) route External addresses to federated canonicals and preserve
@@ -264,6 +269,7 @@ The descriptor is a JSON object (RFC 8259) with the following members:
 | `previous_public_keys` | array   | no       | Ed25519 public keys in the same encoding, accepted by this Domain's peers during a rotation window (§9.5). Absent or `[]` if no rotation is in progress. Maximum 4 entries. |
 | `versions`             | array   | yes      | Non-empty array of protocol version strings this Domain understands, e.g. `["0.2"]`.                                                                                        |
 | `registrar`            | boolean | no       | `true` if this Domain is a Registrar (§8). Defaults to `false`.                                                                                                             |
+| `chat`                 | boolean | no       | `true` if this Domain implements the chat extension (§14), in which case `versions` includes `"0.3"`. Defaults to `false`.                                                 |
 | `max_envelope_bytes`   | integer | no       | Advertised inbound envelope-body size cap in bytes. Default when absent: `10485760` (10 MiB).                                                                               |
 | `max_attachment_bytes` | integer | no       | Advertised per-attachment decoded size cap in bytes. Default when absent: `26214400` (25 MiB).                                                                              |
 
@@ -1234,6 +1240,12 @@ specifies protocol version `0.2`, because everything it adds is an optional
 field or a rule a 0.2 peer is not affected by. A Domain implementing this
 revision advertises `["0.2"]`.
 
+The chat extension (§14) is protocol version `0.3`. A chat envelope has no
+`thread`, which a `0.2` Destination requires, so it cannot be an optional
+addition to `0.2`. Mail envelopes are unchanged in `0.3`. A Domain that
+implements chat advertises `["0.2", "0.3"]` and **MAY** send mail as either;
+one that does not goes on advertising `["0.2"]`.
+
 ## 11. Conformance
 
 A **Basic Webmail-Federation Domain** **MUST** implement:
@@ -1252,6 +1264,10 @@ A **Registrar Domain** **MUST** implement all of the above, plus:
 - §8.1–§8.7 (every Registrar endpoint).
 - §9.6 peer identity (strict, with attention to Registrar re-dispatch rules).
 - §9.9 privacy considerations specific to `/lookup` and `/pending-shadows`.
+
+A **Chat Domain** implements the Basic tier, plus:
+
+- §14.1–§14.8, advertised with `"chat": true` and version `"0.3"`.
 
 An implementation that cannot satisfy the Basic tier is not a conformant
 Webmail-Federation Domain. An implementation that implements some but not all of
@@ -1292,6 +1308,270 @@ RFC 8615:
 
 - RFC 8615 §3 (delegated hostname scope) and §4.3 (cross-host policy caveat),
   both cited in §9.8.
+
+## 14. Chat extension
+
+This section defines how a chat crosses Domains. It is optional: a Domain that
+does not advertise it (§14.1) is unaffected, and its users cannot be reached in
+a chat from another Domain. A chat reuses what mail already defines: discovery
+and trust (§4), the request, its signature, the responses and the retry policy
+(§6), idempotency (§5.4), message order (§5.5) and attachments (§7). What
+differs is the envelope (§14.2), how a chat comes to exist on another Domain
+(§14.3), how fast it is delivered (§14.4), what happens when someone joins
+(§14.5), and how members learn who has read a message (§14.7).
+
+A chat is one conversation, either **direct**, between exactly two people, or a
+**group**, with a name and any number of members. It has no subject and no
+folder. Everything below that says "member" means a member of the chat.
+
+### 14.1 Advertisement
+
+A Domain that implements this section advertises `"chat": true` in its peer
+descriptor (§4.2) and lists `"0.3"` in its `versions` (§10). A Domain that
+advertises `chat` **MUST** implement all of §14.
+
+An Origin **MUST NOT** send a chat envelope to a Destination whose current
+descriptor does not advertise both. When a user adds such an address to a
+chat, or starts a chat with it, the Origin **MUST** tell the user at once, with
+a local message in the chat from `mailer-daemon@{origin_domain}` naming the
+addresses that cannot be reached, and **MUST NOT** record them as members. Like
+a bounce (§6.5), that message is local and never leaves the Origin.
+
+### 14.2 Chat envelope
+
+A chat envelope is an envelope of protocol version `0.3` whose `kind` is
+`"chat"`. It carries a `chat` object where a mail envelope carries `thread`;
+every other member is as in §5.2.
+
+```json
+{
+  "version": "0.3",
+  "kind": "chat",
+  "envelope_id": "018f4d2b-9f21-7890-abcd-ef01234567a0",
+  "origin_domain": "103mail.com",
+  "origin_sent_at": "2026-10-25T10:15:00.000Z",
+  "chat": {
+    "federation_id": "018f4d2b-9f21-7890-abcd-ef01234567a1",
+    "type": "group",
+    "name": "Launch",
+    "members": [
+      "alice@103mail.com",
+      "bob@example.com",
+      "erin@mail.acme.io"
+    ]
+  },
+  "message": {
+    "federation_id": "018f4d2b-9f21-7890-abcd-ef01234567a2",
+    "sender_email": "alice@103mail.com",
+    "sender_name": "Alice",
+    "body": "Docs are ready",
+    "sent_at": "2026-10-25T10:15:00.000Z"
+  },
+  "attachments": [],
+  "recipients": ["bob@example.com"]
+}
+```
+
+Field rules, in addition to those of §5.3 for the fields both kinds share:
+
+| Field                | Type    | Required | Constraint                                                                                                                                                                          |
+| -------------------- | ------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`            | string  | yes      | `"0.3"`.                                                                                                                                                                            |
+| `kind`               | string  | yes      | `"chat"`, or `"chat_read"` for a read receipt (§14.7). An envelope of version `0.3` without `kind`, or with `"mail"`, is a mail envelope as in §5.                                |
+| `thread`             | object  | no       | **MUST** be absent. A chat envelope that carries one is rejected with `400 schema_violation`.                                                                                       |
+| `chat.federation_id` | string  | yes      | UUIDv7, chosen by the Domain of the member who created the chat (§14.3).                                                                                                           |
+| `chat.type`          | string  | yes      | `"direct"` or `"group"`.                                                                                                                                                            |
+| `chat.name`          | string  | no       | Required for a group, max 255 bytes. **MUST** be absent or null for a direct chat.                                                                                                  |
+| `chat.members`       | array   | yes      | Everyone in the chat when the message was sent, on any Domain, as `thread.members` in §5.3. Exactly 2 entries for a direct chat; 1–1000 for a group.                               |
+| `chat.left`          | array   | no       | As `thread.left` (§5.6).                                                                                                                                                            |
+| `chat.refused`       | array   | no       | As `thread.refused` (§6.5).                                                                                                                                                         |
+| `message.history`    | boolean | no       | `true` for an earlier message sent to someone who has just joined (§14.5). Defaults to `false`.                                                                                     |
+
+`recipients` and `chat.members` relate as `recipients` and `thread.members` do
+(§5.3): each Destination gets its own envelope, listing only its own addresses
+in `recipients`, and all of them carry the same `chat.members`.
+
+A Destination that does not advertise `chat` does not list `"0.3"` either, so a
+chat envelope sent to it in error is rejected with `400 unsupported_version`
+and cannot be read as mail.
+
+### 14.3 Creating a chat
+
+A chat reaches another Domain only with a message in it.
+
+- **Group.** Creating a group chat with members on other Domains sends a
+  message from its creator saying so, for example "Alice created the group
+  Launch", to every other member's Domain. That message's `chat.members` is
+  the group as created.
+- **Direct.** A direct chat travels with its first message. A Domain **MAY**
+  hold a direct chat with no messages locally, but sends nothing until one is
+  written.
+
+A Destination that receives a message for a `chat.federation_id` it does not
+hold creates the chat for its `recipients`, with `chat.type`, `chat.name` and
+`chat.members` as given.
+
+A direct chat is identified by its two members, not by its `federation_id`.
+There is at most one direct chat for a pair of addresses on each Domain. Two
+people may start one with each other at the same moment, each from their own
+Domain, with two `federation_id`s. A Destination **MUST** deliver a direct-chat
+envelope into the direct chat it holds with the same two members, whatever its
+`chat.federation_id`, and from then on **MUST** use the lower of the two,
+compared as lowercase strings, in the envelopes it sends, so that both sides
+settle on one.
+
+### 14.4 Delivery
+
+Chat is read as it is written, so the Origin **MUST** start delivering a chat
+message as soon as it has persisted it (§3.1), rather than on a schedule. When
+both Domains are reachable, a member on another Domain **SHOULD** see a message
+within a few seconds of it being sent. Retries follow §6.4 unchanged, and a
+message that used up its budget is sent again as §6.4 describes.
+
+Each Destination gets its own envelope, independently (§3.1). A message that
+cannot reach one Domain still reaches the others at once.
+
+Every Domain **MUST** show a chat's messages in the order of §5.5, with
+`chat.federation_id` in the role of the thread.
+
+### 14.5 Membership
+
+Joining, leaving and refusal travel as messages in the chat, as §5.6 and §6.5
+define for a thread, with `chat.members`, `chat.left` and `chat.refused` in
+place of the `thread` fields. As there, nobody can remove another member and
+nobody can add themselves: a Destination refuses a message from a sender who is
+not a member of a chat it holds with `425 not_a_member`. Roles such as creator
+or admin are local to a Domain and are not carried.
+
+**History.** Someone added to a chat sees its earlier messages. Unlike §5.6,
+this is required for a member whose Domain does not hold the chat yet. Every
+Domain that holds the chat and learns of an addition, by sending it or by
+receiving it, **MUST** send the added members' Domains the earlier messages its
+own users wrote in the chat, in envelopes addressed to the added members only,
+with the original `message.federation_id` and `message.sent_at` and with
+`message.history` set to `true`. Each Domain sends only its own users'
+messages, so every message is still signed by the Domain its sender belongs
+to, and no Domain can put words in the mouth of another's user.
+
+A Destination stores a history message in its place in the chat (§5.5). It
+**MUST NOT** notify anyone of it or count it as unread, and it **MUST** accept
+it from a sender who has since left the chat. It **MUST** deduplicate by
+`message.federation_id`, since an addition may be learnt of twice.
+
+**Leaving.** A member who left keeps the messages written before they left and
+receives nothing after, as for a thread.
+
+### 14.6 State that stays local
+
+The following are a user's own and **MUST NOT** be carried between Domains:
+
+- Deleting or hiding a chat. Whoever deletes a chat stays a member, so other
+  Domains go on delivering to them, and their own Domain decides what a new
+  message does to the deleted chat.
+- Muting and notification preferences.
+- Typing indicators and presence.
+
+Read state is not among them: who has read a message is carried by read
+receipts (§14.7).
+
+**Edits and deletions.** This version cannot carry a change to a message once
+it has been sent. An implementation that lets an author edit or delete a
+message within a window **MUST NOT** offer that for a message in a chat that
+has members on other Domains, so that every member keeps reading the same
+conversation.
+
+### 14.7 Read receipts
+
+A member who writes in a chat can see who has received their message and who
+has read it, wherever those members are.
+
+**Delivery** needs nothing new. A Destination's `202` (§6.3) tells the Origin
+that the envelope's `recipients` have the message, less any it lists in
+`refused_recipients`, and the Origin **MAY** show the message as delivered to
+them.
+
+**Reading** is carried by a receipt: an envelope of version `0.3` whose `kind`
+is `"chat_read"`, saying that one member has read a chat up to and including
+one message.
+
+```json
+{
+  "version": "0.3",
+  "kind": "chat_read",
+  "envelope_id": "018f4d2b-9f21-7890-abcd-ef01234567b0",
+  "origin_domain": "example.com",
+  "origin_sent_at": "2026-10-25T10:16:30.000Z",
+  "chat": {
+    "federation_id": "018f4d2b-9f21-7890-abcd-ef01234567a1",
+    "type": "group",
+    "name": "Launch",
+    "members": [
+      "alice@103mail.com",
+      "bob@example.com",
+      "erin@mail.acme.io"
+    ]
+  },
+  "read": {
+    "reader_email": "bob@example.com",
+    "up_to": "018f4d2b-9f21-7890-abcd-ef01234567a2",
+    "read_at": "2026-10-25T10:16:29.000Z"
+  },
+  "recipients": ["alice@103mail.com"]
+}
+```
+
+| Field               | Type   | Required | Constraint                                                                                                                                 |
+| ------------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kind`              | string | yes      | `"chat_read"`.                                                                                                                             |
+| `chat`              | object | yes      | As in §14.2, so the Destination can find the chat, including a direct chat by its two members (§14.3).                                     |
+| `message`           | object | no       | **MUST** be absent, as **MUST** `attachments` and `thread`. Otherwise `400 schema_violation`.                                              |
+| `read.reader_email` | string | yes      | The member who read. An addr-spec on the Origin's own DNS domain, since a Domain speaks only for its own users. Otherwise `400 schema_violation`. |
+| `read.up_to`        | string | yes      | UUIDv7: the `message.federation_id` of the newest message, written by one of `recipients`, that the reader has read.                      |
+| `read.read_at`      | string | yes      | When the reader read it, with the rules of `message.sent_at` (§5.3).                                                                       |
+| `recipients`        | array  | yes      | The members on the Destination whose messages the reader has newly read, all on its DNS domain (§5.3).                                     |
+
+**Sending.** When a member reads a chat, their Domain **MUST** send a receipt
+to every other Domain one of whose users wrote a message the reader has newly
+read, naming in `read.up_to` the newest such message by that Domain's users and
+in `recipients` those users. It sends none for messages of its own users,
+which it records itself, and none for a message delivered as history (§14.5).
+A receipt goes only to the Domains of the people whose messages were read: the
+rest of a group learns nothing of it.
+
+Receipts are cumulative, so a later one says everything an earlier one did. A
+Domain **SHOULD** send at most one receipt per chat, reader and Destination
+every few seconds, and **MAY** drop a queued receipt once a later one for the
+same chat, reader and Destination is queued. Otherwise a receipt is retried as
+§6.4 says.
+
+**Receiving.** A Destination refuses a receipt from a reader who is not a
+member of the chat with `425 not_a_member`, as it refuses a message (§14.5).
+Otherwise it records that the reader has read every message of the chat, up
+to and including `read.up_to` in the order of §5.5, written by any of
+`recipients`. A reader's position only moves forward: a receipt that says less
+than one already recorded is accepted with `202` and changes nothing. So is a
+receipt whose `read.up_to` the Destination does not hold.
+
+**Turning them off.** A Domain **MAY** let its users turn read receipts off.
+It then sends none for them. Whether such a user still sees when others have
+read their messages is up to their Domain.
+
+### 14.8 Security and privacy
+
+Chat envelopes are authenticated, deduplicated and limited exactly as mail
+envelopes are (§6.2, §5.4, §7, §9). The no-SMTP property of §2.1 holds for
+chat as for mail: a chat message's body **MUST NOT** be delivered to a host
+that is not a Webmail Domain, so whatever a Destination emits to tell a user
+of a chat message (§6.5, step 4) carries none of its content.
+
+A chat discloses its membership to every member's Domain, as a thread does.
+History (§14.5) discloses earlier messages to a new member's Domain, which is
+what adding someone means. A read receipt (§14.7) discloses when a member read
+a chat, and only to the Domains of the people whose messages they read.
+
+Chat produces far more, and far smaller, envelopes than mail. A Destination
+**SHOULD** rate-limit chat envelopes separately from mail envelopes (§9.10), so
+that a busy chat cannot hold up mail from the same peer, nor mail a chat.
 
 ## Appendix A. Example exchange
 
@@ -1430,6 +1710,18 @@ the signing input changes.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §14 new: the chat extension, protocol version `0.3`. A chat envelope
+    carries a `chat` object instead of `thread`; a group chat reaches another
+    Domain with a message saying it was created, a direct chat with its first
+    message, and a direct chat is identified by its two members. Chat is
+    delivered as soon as it is persisted. Joining, leaving and refusal work as
+    for threads, and a new member's Domain gets the earlier messages from each
+    Domain for its own users. Read receipts, an envelope of kind `chat_read`,
+    tell the Domains of the people whose messages were read how far a member
+    has read. Typing, presence and deleting a chat stay local, and messages in
+    a cross-Domain chat cannot be edited.
+  - §2, §4.2, §10, §11: the goal and non-goals of chat, the descriptor's
+    optional `chat` field, version `0.3`, and a Chat Domain tier.
   - §5.6, §6.3: a Destination refuses a message on a thread it holds from a
     sender who is not a member of it with `425 not_a_member`, and never adds
     a sender because `thread.members` names them.
