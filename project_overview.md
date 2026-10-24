@@ -9,7 +9,7 @@ operated Webmail Domains, so domains like 103mail.com and example.com can share
 one client bundle while still exchanging mail. It contains the RFC
 (`project_rfc.md`, normative for anything that crosses a Domain boundary), the
 design and migration narrative (`project_design.md`) and the plan with current
-status (`project_plan.md`). Status as of 2026-10-21.
+status (`project_plan.md`). Status as of 2026-10-25.
 
 **Why:** 103mail.com production still runs on the PHP monolith, which is
 single-domain and will never federate. The Go backend replaces it and
@@ -23,7 +23,8 @@ this one in isolation:
 - `webmail-server`: Go backend (ADR 2 supersedes PHP). PostgreSQL in
   production, SQLite under test (ADR 19). Implements the Basic tier (ADR 17)
   and advertises `registrar: false`. Federation code is in
-  `internal/federation`, the mail side of it in `internal/email`. The OpenAPI
+  `internal/federation`, the mail side of it in `internal/email`, and the
+  chat side, still uncommitted, in `internal/chat`. The OpenAPI
   spec of record is in `docs/openapi/v1/`, tested against the routes.
 - `webmail-client`: React/MUI SPA, one bundle for all Domains. Real API client,
   per-Domain `/config.json` and `DomainContext`, chat over WebSocket. No
@@ -64,4 +65,14 @@ this one in isolation:
   peer.test, a fault proxy and a clock the stories move forward. Federation
   works there and M1 stories 01-09 are green, inbound rate limiting included;
   nothing federates in staging or production yet.
-- Chat and calendar do not federate; the RFC covers mail only.
+- Chat and calendar federate as optional extensions on protocol version
+  `0.3`, each advertised by its own descriptor field: chat in RFC §14
+  (`chat`, `chat_read` envelopes) and calendar in RFC §15 (`meeting`,
+  `meeting_rsvp`). Decided 2026-10-25: calendar is not iCalendar, iTIP or
+  iMIP. A meeting is sent whole with a rising `revision`, only by the
+  organizer's Domain, which alone invites and removes attendees; each
+  attendee's own Domain sends their answer to every attendee's Domain;
+  recurrence is JSON modelled on RRULE. Nothing about a meeting goes by
+  email, so External addresses cannot be invited. Chat federation is being
+  built in `webmail-server` (uncommitted) with M7 stories tagged `@wip`;
+  calendar federation is spec only.

@@ -1,6 +1,6 @@
 # Webmail Federation: Project Plan
 
-Status as of 2026-10-21, end of day. Covers the seven repos under `~/projects/webmail/`. The
+Status as of 2026-10-25. Covers the seven repos under `~/projects/webmail/`. The
 RFC (`project_rfc.md`) is the normative spec for anything that crosses a Domain
 boundary, and the design doc (`project_design.md`) is the migration narrative.
 This file only adds the order of work and where each part currently stands.
@@ -9,13 +9,13 @@ This file only adds the order of work and where each part currently stands.
 
 | Repo                 | Role                                         | State                                                                                                                                                                                                                                                                                                                                                                 |
 | -------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `webmail-federation` | RFC + design + plan + overview               | RFC revision 0.3, tagged `rfc-0.3` (protocol version 0.2 on the wire), complete for the Basic and Registrar tiers. Since 0.3: replies belong to the thread (§5.5), and messages from non-members of a thread are refused with `425 not_a_member` (§5.6, §6.3). Overview and design are current. |
-| `webmail-server`     | Go backend, replaces the PHP side            | Implements the **Basic tier** (ADR 17, hardened in ADR 21): discovery + TOFU, Ed25519 signing, envelopes, inline attachments, outbox worker with 72h retry, backfill once a peer is back, and local bounces carrying the peer's error code. Attachment limits on both sides, non-members refused, own-key rotation with a 48h window, Appendix B vector tested, inbound rate limiting per peer Domain. PostgreSQL in production, SQLite under test (ADR 19). Advertises `registrar: false`. The OpenAPI spec of record now lives here (`docs/openapi/v1/`, moved from the legacy repo and extended with the federation, chat-session, SES webhook and thread move/leave routes), and `openapi_test.go` fails when a served route is missing from it or the reverse. |
+| `webmail-federation` | RFC + design + plan + overview               | RFC revision 0.3, tagged `rfc-0.3` (protocol version 0.2 on the wire), complete for the Basic and Registrar tiers. Since 0.3: replies belong to the thread (§5.5), messages from non-members of a thread are refused with `425 not_a_member` (§5.6, §6.3), the chat extension (§14) defines protocol version `0.3`, and the calendar extension (§15) is drafted on it, with `kind` general to `0.3` and unknown kinds refused with `400 unsupported_kind` (§10). Overview and design are current. |
+| `webmail-server`     | Go backend, replaces the PHP side            | Implements the **Basic tier** (ADR 17, hardened in ADR 21): discovery + TOFU, Ed25519 signing, envelopes, inline attachments, outbox worker with 72h retry, backfill once a peer is back, and local bounces carrying the peer's error code. Attachment limits on both sides, non-members refused, own-key rotation with a 48h window, Appendix B vector tested, inbound rate limiting per peer Domain. PostgreSQL in production, SQLite under test (ADR 19). Advertises `registrar: false`. The OpenAPI spec of record now lives here (`docs/openapi/v1/`, moved from the legacy repo and extended with the federation, chat-session, SES webhook and thread move/leave routes), and `openapi_test.go` fails when a served route is missing from it or the reverse. Chat federation (RFC §14) is in progress and uncommitted: descriptor `chat` field, chat envelopes through the outbox on their own loop, receiving and history. Calendar does not federate: an attendee on another Domain gets a `g_attendee` row and nothing is sent. |
 | `webmail-client`     | React/MUI SPA, one bundle for all Domains    | Real API client, `/config.json` + `DomainContext` per Domain, chat over WebSocket. No federation-specific UI yet (remote recipient marking, bounce rendering).                                                                                                                                                                                                        |
 | `webmail-legacy`     | PHP monolith, current 103mail.com production | Reference for behaviour and schema only (ADR 2). Single-domain, `{7digit}@103mail.com` auto-onboarding. Must not be extended. No longer holds the OpenAPI spec.                                                                                                                                                                                                       |
 | `webmail-deploy`     | Local compose stack (moved out of `webmail-server/deploy`) | Four federated Domains plus the scripted peer `peer.test`, with a fault proxy, mail sink, per-story config overrides, a movable clock and read-only controls (ADR 20). `docker compose up` alone: a setup service makes certificates and keys, and each Domain is at `http://localhost:8001` to `8004`, so no `/etc/hosts` entries or trusted CA. Federation still runs over HTTPS between the real hostnames on the federation network. |
 | `webmail-website`    | Hugo marketing site for 103mail.com          | Says nothing about federation, own domains, or operators.                                                                                                                                                                                                                                                                                                             |
-| `webmail-e2e`        | End-to-end stories per milestone (godog)     | Stories for M1-M6 written. M1 stories 01-09 green on a virtual clock (about 4 minutes for the suite), the rate-limit scenarios of stories 04 and 08 included. The suite runs in a container on the stack's network, so no `/etc/hosts` entries are needed. Committed: it brings up its own stack (`stack/`, from four images, no host ports). Uncommitted work points it at `../webmail-deploy` instead; which of the two stays is open. |
+| `webmail-e2e`        | End-to-end stories per milestone (godog)     | Stories for M1-M6 written, and M7 chat stories (`m7-beyond-mail/01-chat-across-domains.feature`, five stories for RFC §14) tagged `@wip`. M1 stories 01-09 green on a virtual clock (about 4 minutes for the suite), the rate-limit scenarios of stories 04 and 08 included. The suite runs in a container on the stack's network, so no `/etc/hosts` entries are needed. Committed: it brings up its own stack (`stack/`, from four images, no host ports). Uncommitted work points it at `../webmail-deploy` instead; which of the two stays is open. |
 
 Design migration steps (`project_design.md`, "Migration steps") mapped to
 reality:
@@ -42,7 +42,8 @@ Known gaps recorded in ADR 17:
 - `in_reply_to` points at the thread, not the message. Decided (2026-10-21):
   that is intended, not a gap. A reply belongs to the thread, which is read in
   one order (RFC §5.5); there are no branching replies.
-- Chat and calendar are not federated at all; the RFC only covers mail.
+- Chat and calendar are not federated yet. Decided (2026-10-25): both
+  federate, as RFC §14 and §15 (M7).
 
 ## 2. Goal and milestones
 
@@ -60,7 +61,7 @@ recipients through it.
 | M4 Real-email addressing        | Every user has a verified `real_email`                           | Signup double opt-in; notifications go to `real_email`                                                               |
 | M5 103mail.com as Registrar     | Non-federated recipients get shadow mailboxes and can claim them | RFC §8 complete; advertises `registrar: true`                                                                        |
 | M6 Multi-registrar              | Two registrars converge on one mailbox                           | Design step 16 staging scenarios (a), (b), (c) pass                                                                  |
-| M7 Beyond mail (optional)       | Decision and, if yes, spec for chat/calendar federation          | RFC extension draft or a written "no"                                                                                |
+| M7 Beyond mail                  | Chat and calendar federate between Domains                       | RFC §14 and §15 implemented; M7 chat and calendar stories green                                                      |
 
 ## 3. Work breakdown
 
@@ -204,14 +205,65 @@ Design steps 15-16, RFC §8.3-8.6:
 - Staging with two registrars and one non-registrar; run the three scenarios
   from design step 16.
 
-### M7: Beyond mail (decision first)
+### M7: Beyond mail (M for chat, L for calendar)
 
-The seed data and TESTING.md already show the gap: a chat with a peer on the
-other Domain has history but cannot go live. Decide whether chat and calendar
-invites federate. If yes, draft an RFC extension (envelope kinds for chat
-messages and meeting invites, presence excluded), and add an ADR in the server.
-If no, record it as a non-goal in RFC §2.2 and hide cross-Domain chat in the
-client.
+Decided (2026-10-25): chat and calendar both federate, as optional extensions
+on protocol version `0.3`. Calendar does not follow iCalendar, iTIP or iMIP: a
+meeting travels as an envelope between Domains, like chat and mail, never as an
+invitation carried by mail.
+
+Spec:
+
+- Chat extension, RFC §14: direct and group chats, joining and leaving with
+  history, read receipts, a shorter retry budget. Done (2026-10-25).
+- Calendar extension, RFC §15. Drafted (2026-10-25): a `meeting` envelope
+  carries the whole meeting with a `revision` that only goes up, sent only by
+  the organizer's Domain; only the organizer invites and removes attendees; a
+  `meeting_rsvp` from each attendee's own Domain reaches every attendee's
+  Domain, for the whole meeting or one occurrence; recurrence is JSON
+  modelled on RRULE, with overrides, and an unknown member in it is refused;
+  documents travel with every revision. External addresses cannot be invited,
+  since that would put the meeting in an email.
+
+Server, chat:
+
+- Implement RFC §14. In progress (uncommitted in `webmail-server`):
+  descriptor `chat` field, chat and `chat_read` envelopes through the outbox
+  on a loop of their own, receiving, and history for new members. Add an ADR.
+- Answer an unknown `kind` with `400 unsupported_kind` instead of
+  `schema_violation` (`internal/federation/chat.go`).
+
+Server, calendar:
+
+- ADR for meeting revisions: `g_meeting` is canonical and meant to be
+  immutable (CLAUDE.md principle 3), but a meeting now changes. Decide between
+  a `g_meeting_revision` table and new canonical rows per revision, and add
+  `federation_id`, `revision` and `status`.
+- Keep the recurrence rule as the source of truth, with overrides per
+  occurrence, instead of expanding a series into up to 100 `g_meeting` rows,
+  and replace the RRULE string in `g_schedule` with the §15.6 JSON or map
+  between them.
+- Make adding and removing attendees organizer-only (`AddAttendee` lets any
+  attendee invite today), and stop recording an unreachable attendee without
+  telling the organizer.
+- Send `meeting` and `meeting_rsvp` through the outbox, receive both, and send
+  existing answers to the Domains of newly invited attendees.
+- Advertise `calendar: true` once all of §15 is in.
+
+Client:
+
+- Show who cannot be reached when a chat member or meeting attendee is on a
+  Domain without the extension.
+- Show every attendee's answer, per occurrence, and mark an answer given to an
+  earlier revision.
+
+End-to-end:
+
+- Make the five M7 chat stories green and drop `@wip`.
+- Write calendar stories: invite across three Domains, move and cancel a
+  meeting, answers reaching every Domain, removing an attendee, a recurring
+  meeting with one occurrence moved and one cancelled, and an attendee on a
+  Domain without `calendar`.
 
 ### Website (S, runs alongside M3)
 
@@ -228,7 +280,7 @@ M0 ──> M1 ──> M3 ──> M5 ──> M6
         │      ^      ^
         └─> M2 ┘      │
                M4 ────┘
-M7 is independent; decide any time after M3.
+M7 is independent of M2-M6 and can run alongside them.
 ```
 
 M1 and M2 can run in parallel. M4 can start once M2 is done, since it changes
@@ -247,6 +299,10 @@ signup on the production backend.
 - **Spec drift.** The RFC, design doc and ADR 17 already disagree in one place
   (re-signing on retry). Every such resolution should land back in the RFC, not
   just in an ADR.
+- **Meetings change, messages do not (M7).** Calendar federation is the first
+  part of the protocol that replicates changing state rather than appending
+  history. The revision rule in RFC §15.3 keeps it simple on the wire, but the
+  server's canonical-object model has to accommodate it.
 - **Single maintainer.** Interop is only meaningful against a stack someone else
   operates; find a second operator early.
 
@@ -259,7 +315,10 @@ signup on the production backend.
 - Who operates the first external peer Domain for M3?
 - Does 103mail.com become the Default Registrar for the network, and under what
   terms for other operators?
-- Chat and calendar federation: in scope or a recorded non-goal (M7)?
+- ~~Chat and calendar federation: in scope or a recorded non-goal (M7)?~~
+  Decided (2026-10-25): both in scope, RFC §14 and §15.
+- Meetings have no location in the schema, so RFC §15 carries none. Add one
+  to both?
 - Multi-domain hosting on one Server (design §13): needed for the
   Business/Enterprise plans before or after M5?
 - Account portability between Domains stays "no" for v1 (design open questions);
