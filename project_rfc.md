@@ -653,7 +653,8 @@ Every error response **SHOULD** carry a `Retry-After` HTTP header on `429`;
 
 ### 6.4 Retry policy
 
-Retry schedule for transient failures:
+Retry schedule for transient failures (chat envelopes use the shorter one of
+§14.4):
 
 - **Base delay:** 30 seconds.
 - **Backoff:** Exponential with base 2 and full jitter per attempt. Cap delay at
@@ -1422,11 +1423,27 @@ settle on one.
 
 ### 14.4 Delivery
 
-Chat is read as it is written, so the Origin **MUST** start delivering a chat
-message as soon as it has persisted it (§3.1), rather than on a schedule. When
-both Domains are reachable, a member on another Domain **SHOULD** see a message
-within a few seconds of it being sent. Retries follow §6.4 unchanged, and a
-message that used up its budget is sent again as §6.4 describes.
+A chat message is delivered the way mail is: the Origin persists it as an
+outbound envelope (§3.1) and a background worker sends what is due in small
+batches. Chat is read as it is written, so the Origin **MUST** start delivering
+a chat message no later than one second after it has persisted it, and
+**SHOULD** drain chat envelopes in a loop of their own, so that mail waiting
+for a slow Destination does not hold chat up. When both Domains are reachable,
+a member on another Domain **SHOULD** see a message within a few seconds of it
+being sent.
+
+Retries follow §6.4 with a shorter schedule, because a chat message is worth
+the most while the conversation is still going on:
+
+- **Base delay:** 1 second.
+- **Backoff:** as §6.4, capped at 1 minute.
+- **Budget:** exactly 1 hour from the first attempt. **MUST NOT** retry after
+  the budget has elapsed.
+- **Rate-limit pushback:** as §6.4.
+
+A chat message that used up its budget without a response is sent again once
+the Destination answers, as the backfill of §6.4 describes, with a new
+envelope that has a 1-hour budget of its own.
 
 Each Destination gets its own envelope, independently (§3.1). A message that
 cannot reach one Domain still reaches the others at once.
@@ -1713,12 +1730,14 @@ the signing input changes.
   - §14 new: the chat extension, protocol version `0.3`. A chat envelope
     carries a `chat` object instead of `thread`; a group chat reaches another
     Domain with a message saying it was created, a direct chat with its first
-    message, and a direct chat is identified by its two members. Chat is
-    delivered as soon as it is persisted. Joining, leaving and refusal work as
-    for threads, and a new member's Domain gets the earlier messages from each
-    Domain for its own users. Read receipts, an envelope of kind `chat_read`,
-    tell the Domains of the people whose messages were read how far a member
-    has read. Typing, presence and deleting a chat stay local, and messages in
+    message, and a direct chat is identified by its two members. Chat goes
+    through the outbox like mail, drained by a loop of its own within a
+    second of being persisted, with retries from 1 second up to 1 minute
+    apart, a 1-hour budget, and backfill after it. Joining, leaving and
+    refusal work as for threads, and a new member's Domain gets the earlier
+    messages from each Domain for its own users. Read receipts, an envelope
+    of kind `chat_read`, tell the Domains of the people whose messages were
+    read how far a member has read. Typing, presence and deleting a chat stay local, and messages in
     a cross-Domain chat cannot be edited.
   - §2, §4.2, §10, §11: the goal and non-goals of chat, the descriptor's
     optional `chat` field, version `0.3`, and a Chat Domain tier.
