@@ -119,6 +119,9 @@ Server      (physical deployment; process + database)
 - Permit Domains that advertise chat (§14) to hold a chat between users on
   different Domains, under the same authentication and the same no-SMTP
   property as mail.
+- Permit Domains that advertise calendar (§15) to invite users on other
+  Domains to a meeting and to carry their answers, under the same rules, as
+  envelopes between Domains rather than as invitations sent by mail.
 
 ### 2.2 Non-goals
 
@@ -131,6 +134,8 @@ Server      (physical deployment; process + database)
   Signatures in this protocol authenticate Domain-to-Domain transport only.
 - Carrying typing indicators, presence, or edits to sent messages between
   Domains (§14.6).
+- Exchanging meetings with calendars that are not Webmail Domains, through
+  iCalendar, iTIP, iMIP, CalDAV or any other calendar protocol (§15).
 - Cross-Domain address portability (a User at `alice@example.com` cannot retain
   that address when moving to `acme.io`). Note: Registrar "forwarder" aliases
   (§8.5) route External addresses to federated canonicals and preserve
@@ -270,6 +275,7 @@ The descriptor is a JSON object (RFC 8259) with the following members:
 | `versions`             | array   | yes      | Non-empty array of protocol version strings this Domain understands, e.g. `["0.2"]`.                                                                                        |
 | `registrar`            | boolean | no       | `true` if this Domain is a Registrar (§8). Defaults to `false`.                                                                                                             |
 | `chat`                 | boolean | no       | `true` if this Domain implements the chat extension (§14), in which case `versions` includes `"0.3"`. Defaults to `false`.                                                 |
+| `calendar`             | boolean | no       | `true` if this Domain implements the calendar extension (§15), in which case `versions` includes `"0.3"`. Defaults to `false`.                                             |
 | `max_envelope_bytes`   | integer | no       | Advertised inbound envelope-body size cap in bytes. Default when absent: `10485760` (10 MiB).                                                                               |
 | `max_attachment_bytes` | integer | no       | Advertised per-attachment decoded size cap in bytes. Default when absent: `26214400` (25 MiB).                                                                              |
 
@@ -1241,11 +1247,18 @@ specifies protocol version `0.2`, because everything it adds is an optional
 field or a rule a 0.2 peer is not affected by. A Domain implementing this
 revision advertises `["0.2"]`.
 
-The chat extension (§14) is protocol version `0.3`. A chat envelope has no
-`thread`, which a `0.2` Destination requires, so it cannot be an optional
-addition to `0.2`. Mail envelopes are unchanged in `0.3`. A Domain that
-implements chat advertises `["0.2", "0.3"]` and **MAY** send mail as either;
-one that does not goes on advertising `["0.2"]`.
+Protocol version `0.3` adds `kind` to the envelope, so that one version can
+carry envelopes other than mail. A chat envelope has no `thread`, which a `0.2`
+Destination requires, so it cannot be an optional addition to `0.2`. A `0.3`
+envelope without `kind`, or with `"mail"`, is a mail envelope, unchanged from
+`0.2`. Every other kind belongs to an extension, advertised by a descriptor
+field of its own: `chat` and `chat_read` to chat (§14), `meeting` and
+`meeting_rsvp` to calendar (§15). An Origin **MUST NOT** send a kind to a
+Destination that does not advertise its extension, and a Destination **MUST**
+reject an envelope of a kind it does not implement with
+`400 unsupported_kind`, so that it is never read as mail. A Domain that
+implements any extension advertises `["0.2", "0.3"]` and **MAY** send mail as
+either; one that implements none goes on advertising `["0.2"]`.
 
 ## 11. Conformance
 
@@ -1269,6 +1282,13 @@ A **Registrar Domain** **MUST** implement all of the above, plus:
 A **Chat Domain** implements the Basic tier, plus:
 
 - §14.1–§14.8, advertised with `"chat": true` and version `"0.3"`.
+
+A **Calendar Domain** implements the Basic tier, plus:
+
+- §15.1–§15.8, advertised with `"calendar": true` and version `"0.3"`.
+
+The two extensions are independent: a Domain may implement either, both or
+neither.
 
 An implementation that cannot satisfy the Basic tier is not a conformant
 Webmail-Federation Domain. An implementation that implements some but not all of
@@ -1392,9 +1412,9 @@ Field rules, in addition to those of §5.3 for the fields both kinds share:
 (§5.3): each Destination gets its own envelope, listing only its own addresses
 in `recipients`, and all of them carry the same `chat.members`.
 
-A Destination that does not advertise `chat` does not list `"0.3"` either, so a
-chat envelope sent to it in error is rejected with `400 unsupported_version`
-and cannot be read as mail.
+A chat envelope sent in error to a Destination that does not advertise `chat`
+is rejected with `400 unsupported_version` if it does not list `"0.3"`, and
+with `400 unsupported_kind` (§10) if it does, so it cannot be read as mail.
 
 ### 14.3 Creating a chat
 
@@ -1590,6 +1610,385 @@ Chat produces far more, and far smaller, envelopes than mail. A Destination
 **SHOULD** rate-limit chat envelopes separately from mail envelopes (§9.10), so
 that a busy chat cannot hold up mail from the same peer, nor mail a chat.
 
+## 15. Calendar extension
+
+This section defines how a meeting crosses Domains. It is optional: a Domain
+that does not advertise it (§15.1) is unaffected, and its users cannot be
+invited to a meeting on another Domain. Like chat (§14), it reuses discovery
+and trust (§4), the request, its signature, the responses and the retry policy
+(§6), idempotency (§5.4) and attachments (§7).
+
+It is not built on iCalendar, iTIP or iMIP. A meeting travels between Domains
+as a signed envelope, the way a message does, never as a mail message that
+carries an invitation, and its format is the JSON of §15.2.
+
+A meeting differs from a thread or a chat in one way that shapes everything
+below: it changes. A message never changes once it is sent (§14.6), but a
+meeting is moved, renamed and cancelled, and its attendees answer and change
+their answer. So a meeting does not travel as a series of messages. It travels
+as its current state, sent whole each time it changes (§15.3), and answers
+travel separately, each from the Domain of the person answering (§15.5).
+
+Every meeting has one **organizer**, and the organizer's Domain is the only
+Domain that says what the meeting is: its time, its recurrence, its
+description, its documents and who is invited. Every other Domain holds a copy.
+Everything below that says "attendee" means an address in the meeting's
+`attendees`, the organizer included.
+
+### 15.1 Advertisement
+
+A Domain that implements this section advertises `"calendar": true` in its peer
+descriptor (§4.2) and lists `"0.3"` in its `versions` (§10). A Domain that
+advertises `calendar` **MUST** implement all of §15.
+
+An Origin **MUST NOT** send a meeting or an answer to a Destination whose
+current descriptor does not advertise both. When an organizer invites an
+address on such a Domain, or an External address, which this version cannot
+reach, the Origin **MUST** tell the organizer at once, with a local message in
+their inbox from `mailer-daemon@{origin_domain}` naming the meeting and the
+addresses that cannot be reached, and **MUST NOT** list those addresses in
+`attendees`. Like a bounce (§6.5), that message is local and never leaves the
+Origin.
+
+### 15.2 Meeting envelope
+
+A meeting envelope is an envelope of protocol version `0.3` whose `kind` is
+`"meeting"`. It carries a `meeting` object where a mail envelope carries
+`thread` and `message`, and the meeting's documents in `attachments`.
+
+```json
+{
+  "version": "0.3",
+  "kind": "meeting",
+  "envelope_id": "018f4d2b-9f21-7890-abcd-ef01234567c0",
+  "origin_domain": "103mail.com",
+  "origin_sent_at": "2026-10-25T10:15:00.000Z",
+  "meeting": {
+    "federation_id": "018f4d2b-9f21-7890-abcd-ef01234567c1",
+    "revision": 3,
+    "status": "confirmed",
+    "organizer": { "email": "alice@103mail.com", "name": "Alice" },
+    "attendees": [
+      "alice@103mail.com",
+      "bob@example.com",
+      "erin@mail.acme.io"
+    ],
+    "title": "Launch review",
+    "description": "Walk through the open items",
+    "start": "2026-11-03T08:00:00Z",
+    "end": "2026-11-03T09:00:00Z",
+    "time_zone": "Europe/Amsterdam",
+    "all_day": false,
+    "repeat": {
+      "frequency": "weekly",
+      "weekdays": ["tu"],
+      "count": 6
+    },
+    "overrides": [
+      { "occurrence": "2026-11-10T08:00:00Z", "status": "cancelled" }
+    ]
+  },
+  "attachments": [],
+  "recipients": ["bob@example.com"]
+}
+```
+
+Field rules, in addition to those of §5.3 for the fields all kinds share:
+
+| Field                       | Type    | Required | Constraint                                                                                                                                                 |
+| --------------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                   | string  | yes      | `"0.3"`.                                                                                                                                                   |
+| `kind`                      | string  | yes      | `"meeting"`, or `"meeting_rsvp"` for an answer (§15.5).                                                                                                   |
+| `thread`, `chat`, `message` | object  | no       | **MUST** be absent. Otherwise `400 schema_violation`.                                                                                                     |
+| `meeting.federation_id`     | string  | yes      | UUIDv7, chosen by the organizer's Domain when the meeting is created. It never changes.                                                                   |
+| `meeting.revision`          | integer | yes      | 1 or more. See §15.3.                                                                                                                                      |
+| `meeting.status`            | string  | yes      | `"confirmed"` or `"cancelled"`.                                                                                                                           |
+| `meeting.organizer.email`   | string  | yes      | An addr-spec on the Origin's own DNS domain, since only the organizer's Domain sends a meeting. Otherwise `400 schema_violation`.                         |
+| `meeting.organizer.name`    | string  | no       | Max 255 bytes.                                                                                                                                             |
+| `meeting.attendees`         | array   | yes      | 1–1000 addr-specs: everyone invited, on any Domain, the organizer included.                                                                               |
+| `meeting.removed`           | array   | no       | 0–1000 addr-specs removed from the meeting by this revision (§15.4). None of them may appear in `attendees`.                                              |
+| `meeting.title`             | string  | yes      | May be empty. Max 255 bytes.                                                                                                                               |
+| `meeting.description`       | string  | yes      | Plain text. May be empty. Max 1048576 bytes (1 MiB).                                                                                                       |
+| `meeting.description_html`  | string  | no       | Max 4194304 bytes (4 MiB).                                                                                                                                 |
+| `meeting.start`             | string  | yes      | Start of the meeting, or of its first occurrence, with the rules of `message.sent_at` (§5.3).                                                             |
+| `meeting.end`               | string  | yes      | Same rules, and later than `start`.                                                                                                                        |
+| `meeting.time_zone`         | string  | yes      | An IANA time zone identifier, max 255 bytes. A Destination that does not know it rejects the envelope with `400 unknown_time_zone`.                       |
+| `meeting.all_day`           | boolean | no       | Defaults to `false`. See §15.6.                                                                                                                            |
+| `meeting.repeat`            | object  | no       | Absent or null for a single meeting. See §15.6.                                                                                                            |
+| `meeting.overrides`         | array   | no       | 0–1000 entries, only with `repeat`. See §15.6.                                                                                                             |
+| `attachments`               | array   | yes      | 0–64 entries, as in §7: every document the meeting has at this revision.                                                                                   |
+| `recipients`                | array   | yes      | As in §5.3: addresses on the Destination's DNS domain only. Each **MUST** be in `attendees` or in `removed`. Otherwise `400 schema_violation`.             |
+
+`recipients` and `attendees` relate as `recipients` and `thread.members` do
+(§5.3): each Destination gets its own envelope, listing only its own addresses
+in `recipients`, and all of them carry the same `meeting`. A Destination with
+more than 100 attendees gets as many envelopes for each revision as it takes.
+
+### 15.3 Revisions
+
+A meeting travels whole. Each time the organizer's Domain changes anything in
+`meeting` or in its documents, it makes a new revision and sends the meeting
+as it now is to every attendee's Domain, and to the Domain of every address it
+removed (§15.4).
+
+- **Numbering.** Each revision is one higher than the one before. The
+  organizer's Domain **MUST** persist the revision with the meeting and
+  **MUST NOT** use a number twice, so that a later state always carries a
+  higher number. An answer (§15.5) is not a change to the meeting and makes no
+  revision.
+- **Applying.** A Destination keeps, for each meeting, the copy with the
+  highest revision it has received. A revision higher than the one it holds
+  replaces its copy entirely: a field the new revision leaves out is gone, and
+  a document that is no longer in `attachments` is removed. A revision lower
+  than or equal to the one it holds is accepted with `202` and changes nothing.
+  The order envelopes arrive in therefore does not matter, and a late or
+  retried envelope cannot undo a later change.
+- **Creating.** A Destination that receives a meeting it does not hold creates
+  it for those of its `recipients` that are in `attendees`, whatever the
+  revision. A revision is never refused for arriving first.
+- **Authority.** A Destination that holds a meeting **MUST** reject an envelope
+  for the same `meeting.federation_id` with a different
+  `meeting.organizer.email` with `400 organizer_mismatch`. With the rule that
+  the organizer is on the Origin's own domain (§15.2), this means no Domain
+  but the organizer's can change a meeting.
+- **Cancelling.** A cancelled meeting is a revision with `status` set to
+  `"cancelled"`. A Destination keeps it and shows it as cancelled. A later
+  revision may confirm it again.
+
+The documents of a meeting travel with every revision, so a Destination never
+has to ask for one, and receives a self-contained copy as §7 requires. A
+Destination **MAY** keep a document it already holds, with the same
+`federation_id` and `hash_sha256_hex`, rather than store it again.
+
+**Delivery.** The Origin **SHOULD** start delivering a revision as soon as it
+has persisted it (§3.1). Retries follow §6.4 unchanged, because a meeting may
+lie days ahead, and the backfill of §6.4 sends the latest revision. An Origin
+**MAY** drop a queued revision once a later revision of the same meeting is
+queued for the same Destination and the same `recipients`, since the later one
+says everything the earlier one did.
+
+**Notifying.** Which revisions are worth telling a recipient about is up to
+their Domain. It **SHOULD** tell them of an invitation, of a change of time
+and of a cancellation.
+
+### 15.4 Attendees
+
+Only the organizer invites people to a meeting or removes them from it, by
+sending a new revision. An attendee's Domain cannot add or remove anyone: it
+can only answer for its own users (§15.5).
+
+- **Inviting.** The new revision lists the new attendees in `attendees`, and
+  their Domains receive it with them in `recipients`. They see the answers
+  given so far, because every Domain that holds the meeting and learns of an
+  addition, by sending or receiving the revision that makes it, **MUST** send
+  the latest answers of its own users to the added attendees' Domains, in
+  answers addressed to the added attendees only (§15.5).
+- **Removing.** The new revision leaves the removed addresses out of
+  `attendees` and lists them in `removed`, and their Domains receive it with
+  them in `recipients`. Their Domain shows the meeting to them as cancelled.
+  Later revisions do not list them in `removed` and are not sent to them.
+
+  A Destination that holds a meeting treats any of its own attendees that a
+  higher revision leaves out of `attendees` as removed, whether or not it is
+  in `removed`, so that a removal is not lost when the Destination never
+  received the revision that made it.
+- **Refusal.** An attendee that its Domain refuses as `unknown_recipient`
+  (§6.3) does not exist. The Origin bounces it to the organizer (§6.5), with
+  the subject `"Invitation failed: {title}"`, and **MUST** send a new revision
+  that leaves it out of `attendees`, so that the other Domains stop listing
+  it. A refused address is not listed in `removed` and is sent nothing.
+- **Declining.** An attendee who answers `"no"` stays an attendee and goes on
+  receiving revisions. Nobody leaves a meeting but by the organizer removing
+  them.
+
+### 15.5 Answers
+
+An answer is an envelope of version `0.3` whose `kind` is `"meeting_rsvp"`,
+saying how one attendee answered the meeting or one occurrence of it.
+
+```json
+{
+  "version": "0.3",
+  "kind": "meeting_rsvp",
+  "envelope_id": "018f4d2b-9f21-7890-abcd-ef01234567d0",
+  "origin_domain": "example.com",
+  "origin_sent_at": "2026-10-25T10:20:00.000Z",
+  "meeting": {
+    "federation_id": "018f4d2b-9f21-7890-abcd-ef01234567c1",
+    "organizer": { "email": "alice@103mail.com" }
+  },
+  "rsvp": {
+    "attendee_email": "bob@example.com",
+    "answer": "yes",
+    "revision": 3,
+    "answered_at": "2026-10-25T10:19:58.000Z"
+  },
+  "recipients": ["alice@103mail.com"]
+}
+```
+
+| Field                     | Type    | Required | Constraint                                                                                                                                         |
+| ------------------------- | ------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kind`                    | string  | yes      | `"meeting_rsvp"`.                                                                                                                                  |
+| `meeting.federation_id`   | string  | yes      | The meeting answered.                                                                                                                              |
+| `meeting.organizer.email` | string  | yes      | Its organizer. Other members of `meeting` are ignored: an answer never changes the meeting.                                                       |
+| `thread`, `chat`, `message`, `attachments` | any | no | **MUST** be absent. Otherwise `400 schema_violation`. |
+| `rsvp.attendee_email`     | string  | yes      | The attendee who answered. An addr-spec on the Origin's own DNS domain, since a Domain speaks only for its own users, and not the organizer. Otherwise `400 schema_violation`. |
+| `rsvp.answer`             | string  | yes      | `"yes"`, `"no"` or `"maybe"`.                                                                                                                      |
+| `rsvp.revision`           | integer | yes      | The revision of the meeting the attendee answered.                                                                                                 |
+| `rsvp.answered_at`        | string  | yes      | When they answered, with the rules of `message.sent_at` (§5.3).                                                                                    |
+| `rsvp.occurrence`         | string  | no       | The occurrence answered, identified as in `overrides` (§15.6). Absent for the whole meeting.                                                      |
+| `recipients`              | array   | yes      | The attendees on the Destination, all on its DNS domain (§5.3).                                                                                    |
+
+The organizer attends their own meeting: every Domain shows the organizer's
+answer as `"yes"`, and none is sent for them.
+
+**Sending.** When an attendee answers, their Domain **MUST** send the answer to
+every other Domain that has an attendee, the organizer's included, listing all
+of that Domain's attendees in `recipients`. Every attendee sees every answer,
+wherever they are. A Domain **MAY** drop a queued answer once a later answer by
+the same attendee, for the same meeting, occurrence and Destination, is queued.
+Otherwise an answer is retried as §6.4 says.
+
+**Receiving.** A Destination that does not hold the meeting refuses the answer
+with `425 not_a_member`, since the revision that invites the Destination's
+users may still be on its way. So does a Destination whose copy does not list
+`rsvp.attendee_email` in `attendees`, when `rsvp.revision` is higher than the
+revision it holds. When it is not, the attendee was removed, and the answer is
+accepted with `202` and changes nothing.
+
+Otherwise the Destination records the answer. For each attendee it keeps the
+answer for the whole meeting and the answer for each occurrence with the
+latest `answered_at`, and an occurrence's answer is whichever of the two is
+later, so that answering for the whole meeting again also answers every
+occurrence. An answer with an earlier `answered_at` than the one recorded is
+accepted with `202` and changes nothing.
+
+An answer given to a revision lower than the one a Domain holds was given to
+an earlier version of the meeting. A Domain **MAY** show it as such, for
+example when the time has changed since.
+
+### 15.6 Time and recurrence
+
+`start` and `end` are instants in UTC. `time_zone` is the zone the organizer
+meant them in: it decides the local time of day a recurring meeting keeps, and
+a Domain shows each attendee the meeting in their own zone.
+
+**All-day meetings.** When `all_day` is `true`, `start` and `end` are midnight
+in `time_zone`, `end` is exclusive and at least one day after `start`, and a
+Domain shows the meeting as dates, not times, in every zone. An all-day
+envelope whose `start` or `end` is not midnight in `time_zone` is rejected
+with `400 schema_violation`.
+
+**Recurrence.** `repeat` describes the dates on which the meeting recurs. Its
+semantics follow the RRULE of RFC 5545 for the parts listed here, written as
+JSON:
+
+```json
+"repeat": {
+  "frequency": "weekly",
+  "interval": 2,
+  "weekdays": ["tu", "th"],
+  "until": "2026-12-31T23:00:00Z",
+  "extra": ["2026-12-30T08:00:00Z"]
+}
+```
+
+| Field        | Type    | Required | Constraint                                                                                                                                                   |
+| ------------ | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `frequency`  | string  | yes      | `"daily"`, `"weekly"`, `"monthly"` or `"yearly"`.                                                                                                           |
+| `interval`   | integer | no       | 1–1000. Every `interval`th day, week, month or year. Defaults to 1.                                                                                          |
+| `count`      | integer | no       | 1–1000. The number of occurrences, `extra` not counted. **MUST NOT** appear with `until`.                                                                    |
+| `until`      | string  | no       | No occurrence of the rule starts after this instant. Rules of `message.sent_at` (§5.3). **MUST NOT** appear with `count`. Neither means the meeting recurs without end. |
+| `weekdays`   | array   | no       | 1–7 distinct entries of `"mo"`, `"tu"`, `"we"`, `"th"`, `"fr"`, `"sa"`, `"su"`. Only with `"daily"`, where it limits the days, or `"weekly"`, where it names the days of each week. |
+| `month_days` | array   | no       | 1–31 distinct integers from 1 to 31 or from -31 to -1, the last day being -1. Only with `"monthly"`. A month without that day has no occurrence on it.      |
+| `extra`      | array   | no       | 0–1000 instants, rules of `message.sent_at` (§5.3): occurrences outside the rule, each as long as the meeting.                                               |
+
+The rule is expanded in the local time of `time_zone`. The first occurrence
+is always `start`. The rule then gives dates from the date of `start` onwards,
+counting weeks from Monday, and each occurrence starts on its date at the
+local time of day of `start` and lasts as long as the meeting, for an all-day
+meeting the same number of days. An occurrence whose local start does not
+exist, in the gap of a daylight saving change, moves forward by the length of
+the gap; one whose local start occurs twice takes the first. Without
+`weekdays` or `month_days`, a rule recurs on the weekday, day of the month or
+date of `start`.
+
+A Domain **MUST** show every attendee the same occurrences. How many it
+expands ahead of time, for a meeting that recurs without end, is up to the
+Domain.
+
+**Overrides.** An entry of `overrides` changes one occurrence:
+
+```json
+"overrides": [
+  { "occurrence": "2026-11-10T08:00:00Z", "status": "cancelled" },
+  { "occurrence": "2026-11-17T08:00:00Z",
+    "start": "2026-11-18T08:00:00Z", "end": "2026-11-18T09:00:00Z" }
+]
+```
+
+| Field                                                       | Required | Constraint                                                                                                                                         |
+| ----------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `occurrence`                                                | yes      | The start the occurrence has by the rule, or an entry of `extra`. At most one override per occurrence. An override for an instant the rule does not give is ignored. |
+| `status`, `start`, `end`, `title`, `description`, `description_html` | no | As in §15.2, for this occurrence only. A field left out is the meeting's.                                                                     |
+
+An occurrence is taken out of a series by cancelling it, so there is no list of
+excluded dates. When the organizer changes the rule, the Origin **SHOULD**
+leave out of the next revision every override for an occurrence the new rule
+no longer gives.
+
+**Unknown members.** The rule of §10 that unknown fields are ignored does not
+apply inside `repeat` or an entry of `overrides`. A Destination **MUST**
+reject an envelope with a member there that it does not know, or a
+combination this section does not allow, with `400 unsupported_repeat`. A
+recurrence read with a part ignored is expanded into the wrong dates, and a
+Domain cannot tell which parts are safe to ignore.
+
+**Time zone data.** Each Domain expands a rule with its own time zone
+database. Two Domains with different versions of it may disagree about an
+occurrence after a zone changes its rules. Domains **SHOULD** keep their time
+zone data current.
+
+### 15.7 State that stays local
+
+The following are a user's own and **MUST NOT** be carried between Domains:
+
+- Reminders, which calendar a meeting is shown in, its colour, and
+  notification preferences.
+- Deleting or hiding a meeting. Whoever deletes a meeting stays an attendee,
+  so other Domains go on sending them revisions and answers, and their own
+  Domain decides what a new revision does to the deleted meeting. Deleting is
+  not an answer: to tell the others, the attendee answers `"no"`.
+
+### 15.8 Security and privacy
+
+Meeting envelopes and answers are authenticated, deduplicated and limited
+exactly as mail envelopes are (§6.2, §5.4, §7, §9).
+
+The no-SMTP property of §2.1 holds for meetings as for mail. A meeting's
+title, description, time and documents **MUST NOT** be delivered to a host that
+is not a Webmail Domain, and no Domain sends an iCalendar object or any other
+form of the meeting by email. Whatever a Domain emits to tell a user of a
+meeting (§6.5, step 4) carries none of it. That is also why an External
+address cannot be invited in this version (§15.1): the only way to reach it
+would be to put the meeting in an email.
+
+Only the organizer's Domain can change a meeting (§15.3), so an attendee's
+Domain cannot move, cancel or rewrite a meeting it was invited to, nor invite
+anyone. Only an attendee's own Domain can answer for them (§15.5).
+
+A meeting discloses its attendees to every attendee's Domain, as a thread
+discloses its members. Answers are disclosed to every attendee's Domain, so
+everyone invited sees who is coming. A removed attendee's Domain receives the
+revision that removed them, and with it the attendees who remain.
+
+A meeting envelope carries all of the meeting's documents with every revision,
+so a meeting with large documents that is changed often is heavy. A
+Destination **SHOULD** rate-limit meeting envelopes separately from mail and
+chat (§9.10), and an Origin **SHOULD** drop superseded revisions from its queue
+as §15.3 allows.
+
 ## Appendix A. Example exchange
 
 ### A.1 Origin-side send
@@ -1727,6 +2126,22 @@ the signing input changes.
 ## Appendix C. Change log
 
 - **Unreleased:**
+  - §15 new: the calendar extension, on protocol version `0.3`. A meeting is
+    sent whole, as an envelope of kind `meeting` with a `revision` that only
+    goes up, by the organizer's Domain only, to every attendee's Domain; a
+    Destination keeps the highest revision. Only the organizer invites and
+    removes attendees. Each attendee's own Domain sends their answer, an
+    envelope of kind `meeting_rsvp`, to every other attendee's Domain, for the
+    whole meeting or one occurrence. Times are UTC instants with an IANA
+    zone; recurrence is a JSON rule modelled on RRULE, with overrides for
+    single occurrences, and an unknown member in it is refused rather than
+    ignored. Documents travel with every revision. Nothing about a meeting is
+    sent by email, and External addresses cannot be invited.
+  - §10, §14.2: `kind` is general to `0.3`. Each kind other than mail belongs
+    to an extension with its own descriptor field, and a Destination refuses a
+    kind it does not implement with `400 unsupported_kind`.
+  - §2, §4.2, §11: the goal and non-goal of calendar, the descriptor's
+    optional `calendar` field, and a Calendar Domain tier.
   - §14 new: the chat extension, protocol version `0.3`. A chat envelope
     carries a `chat` object instead of `thread`; a group chat reaches another
     Domain with a message saying it was created, a direct chat with its first
