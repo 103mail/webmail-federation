@@ -1622,12 +1622,14 @@ It is not built on iCalendar, iTIP or iMIP. A meeting travels between Domains
 as a signed envelope, the way a message does, never as a mail message that
 carries an invitation, and its format is the JSON of §15.2.
 
-A meeting differs from a thread or a chat in one way that shapes everything
-below: it changes. A message never changes once it is sent (§14.6), but a
-meeting is moved, renamed and cancelled, and its attendees answer and change
-their answer. So a meeting does not travel as a series of messages. It travels
-as its current state, sent whole each time it changes (§15.3), and answers
-travel separately, each from the Domain of the person answering (§15.5).
+A meeting is moved, renamed and cancelled, and its attendees answer and
+change their answer, but nothing about it is ever edited or deleted, as no
+message in a thread is (§14.6). Each change is a new revision of the meeting,
+sent whole (§15.3), and each answer is a new answer, sent from the Domain of
+the person answering (§15.5). Every Domain keeps every revision and every
+answer, stacked as a thread stacks its messages: a meeting is shown as its
+latest revision and each attendee's latest answer, and the earlier ones are
+its history.
 
 Every meeting has one **organizer**, and the organizer's Domain is the only
 Domain that says what the meeting is: its time, its recurrence, its
@@ -1666,6 +1668,7 @@ A meeting envelope is an envelope of protocol version `0.3` whose `kind` is
   "meeting": {
     "federation_id": "018f4d2b-9f21-7890-abcd-ef01234567c1",
     "revision": 3,
+    "changed_at": "2026-10-25T10:14:58.000Z",
     "status": "confirmed",
     "organizer": { "email": "alice@103mail.com", "name": "Alice" },
     "attendees": [
@@ -1702,6 +1705,7 @@ Field rules, in addition to those of §5.3 for the fields all kinds share:
 | `thread`, `chat`, `message` | object  | no       | **MUST** be absent. Otherwise `400 schema_violation`.                                                                                                     |
 | `meeting.federation_id`     | string  | yes      | UUIDv7, chosen by the organizer's Domain when the meeting is created. It never changes.                                                                   |
 | `meeting.revision`          | integer | yes      | 1 or more. See §15.3.                                                                                                                                      |
+| `meeting.changed_at`        | string  | yes      | When the organizer made this revision, with the rules of `message.sent_at` (§5.3). Not changed by retries or backfill.                                     |
 | `meeting.status`            | string  | yes      | `"confirmed"` or `"cancelled"`.                                                                                                                           |
 | `meeting.organizer.email`   | string  | yes      | An addr-spec on the Origin's own DNS domain, since only the organizer's Domain sends a meeting. Otherwise `400 schema_violation`.                         |
 | `meeting.organizer.name`    | string  | no       | Max 255 bytes.                                                                                                                                             |
@@ -1736,13 +1740,15 @@ removed (§15.4).
   **MUST NOT** use a number twice, so that a later state always carries a
   higher number. An answer (§15.5) is not a change to the meeting and makes no
   revision.
-- **Applying.** A Destination keeps, for each meeting, the copy with the
-  highest revision it has received. A revision higher than the one it holds
-  replaces its copy entirely: a field the new revision leaves out is gone, and
-  a document that is no longer in `attachments` is removed. A revision lower
-  than or equal to the one it holds is accepted with `202` and changes nothing.
-  The order envelopes arrive in therefore does not matter, and a late or
-  retried envelope cannot undo a later change.
+- **Stacking.** A Destination stores every revision it receives and changes
+  none it holds. The meeting is shown as its highest revision, which stands on
+  its own: a field it leaves out is not the meeting's, and a document that is
+  not in its `attachments` is not the meeting's, though both stay in the
+  revisions that carried them. A revision that arrives after a higher one is
+  stored in its place in the history and does not change what is shown. A
+  revision the Destination already holds is accepted with `202` and changes
+  nothing. The order envelopes arrive in therefore does not matter, and a late
+  or retried envelope cannot undo a later change.
 - **Creating.** A Destination that receives a meeting it does not hold creates
   it for those of its `recipients` that are in `attendees`, whatever the
   revision. A revision is never refused for arriving first.
@@ -1753,12 +1759,14 @@ removed (§15.4).
   but the organizer's can change a meeting.
 - **Cancelling.** A cancelled meeting is a revision with `status` set to
   `"cancelled"`. A Destination keeps it and shows it as cancelled. A later
-  revision may confirm it again.
+  revision may confirm it again. A meeting is never deleted between Domains.
+- **History.** A newly invited attendee's Domain receives the current
+  revision, not the earlier ones: their history starts at the invitation.
 
 The documents of a meeting travel with every revision, so a Destination never
-has to ask for one, and receives a self-contained copy as §7 requires. A
-Destination **MAY** keep a document it already holds, with the same
-`federation_id` and `hash_sha256_hex`, rather than store it again.
+has to ask for one, and every revision is self-contained as §7 requires. A
+Destination **MAY** store the bytes of a document it already holds, with the
+same `federation_id` and `hash_sha256_hex`, only once.
 
 **Delivery.** The Origin **SHOULD** start delivering a revision as soon as it
 has persisted it (§3.1). Retries follow §6.4 unchanged, because a meeting may
@@ -1857,12 +1865,12 @@ users may still be on its way. So does a Destination whose copy does not list
 revision it holds. When it is not, the attendee was removed, and the answer is
 accepted with `202` and changes nothing.
 
-Otherwise the Destination records the answer. For each attendee it keeps the
-answer for the whole meeting and the answer for each occurrence with the
-latest `answered_at`, and an occurrence's answer is whichever of the two is
-later, so that answering for the whole meeting again also answers every
-occurrence. An answer with an earlier `answered_at` than the one recorded is
-accepted with `202` and changes nothing.
+Otherwise the Destination stores the answer with the attendee's earlier
+ones. An attendee's answer for the whole meeting is their stored answer for it
+with the latest `answered_at`, and so is their answer for one occurrence; an
+occurrence's effective answer is whichever of the two is later, so that
+answering for the whole meeting again also answers every occurrence. An answer
+that arrives after a later one is stored and changes nothing shown.
 
 An answer given to a revision lower than the one a Domain holds was given to
 an earlier version of the meeting. A Domain **MAY** show it as such, for
@@ -1956,10 +1964,11 @@ The following are a user's own and **MUST NOT** be carried between Domains:
 
 - Reminders, which calendar a meeting is shown in, its colour, and
   notification preferences.
-- Deleting or hiding a meeting. Whoever deletes a meeting stays an attendee,
-  so other Domains go on sending them revisions and answers, and their own
-  Domain decides what a new revision does to the deleted meeting. Deleting is
-  not an answer: to tell the others, the attendee answers `"no"`.
+- Deleting or hiding a meeting, which only ever removes it from that user's
+  own view. Whoever deletes a meeting stays an attendee, so other Domains go
+  on sending them revisions and answers, and their own Domain decides what a
+  new revision does to the deleted meeting. Deleting is not an answer: to tell
+  the others, the attendee answers `"no"`.
 
 ### 15.8 Security and privacy
 
@@ -2128,8 +2137,10 @@ the signing input changes.
 - **Unreleased:**
   - §15 new: the calendar extension, on protocol version `0.3`. A meeting is
     sent whole, as an envelope of kind `meeting` with a `revision` that only
-    goes up, by the organizer's Domain only, to every attendee's Domain; a
-    Destination keeps the highest revision. Only the organizer invites and
+    goes up and the time of the change in `changed_at`, by the organizer's
+    Domain only, to every attendee's Domain. Revisions and answers stack like
+    messages in a thread: every Domain keeps all of them, edits and deletes
+    none, and shows the latest. Only the organizer invites and
     removes attendees. Each attendee's own Domain sends their answer, an
     envelope of kind `meeting_rsvp`, to every other attendee's Domain, for the
     whole meeting or one occurrence. Times are UTC instants with an IANA

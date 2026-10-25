@@ -235,14 +235,13 @@ Server, chat:
 
 Server, calendar:
 
-- ADR for meeting revisions: `g_meeting` is canonical and meant to be
-  immutable (CLAUDE.md principle 3), but a meeting now changes. Decide between
-  a `g_meeting_revision` table and new canonical rows per revision, and add
-  `federation_id`, `revision` and `status`.
-- Keep the recurrence rule as the source of truth, with overrides per
-  occurrence, instead of expanding a series into up to 100 `g_meeting` rows,
-  and replace the RRULE string in `g_schedule` with the §15.6 JSON or map
-  between them.
+- Store meetings as a stack of revisions (ADR 22, proposed 2026-10-25):
+  `g_meeting` as the meeting, append-only `g_meeting_revision`,
+  `g_meeting_attendee` per revision, `g_meeting_rsvp` per answer and
+  `g_meeting_document` per revision, nothing canonical edited or deleted,
+  and deleting only in the `meeting` projection. Occurrences are expanded at
+  read time from the §15.6 JSON, so `g_schedule` and `schedule` go. Add an
+  update route that writes a revision.
 - Make adding and removing attendees organizer-only (`AddAttendee` lets any
   attendee invite today), and stop recording an unreachable attendee without
   telling the organizer.
@@ -299,10 +298,10 @@ signup on the production backend.
 - **Spec drift.** The RFC, design doc and ADR 17 already disagree in one place
   (re-signing on retry). Every such resolution should land back in the RFC, not
   just in an ADR.
-- **Meetings change, messages do not (M7).** Calendar federation is the first
-  part of the protocol that replicates changing state rather than appending
-  history. The revision rule in RFC §15.3 keeps it simple on the wire, but the
-  server's canonical-object model has to accommodate it.
+- **Calendar schema rework (M7).** Stacking revisions (ADR 22) replaces the
+  calendar tables and moves recurrence expansion to read time, and existing
+  meetings have to be migrated into it, which lands in the same window as the
+  M2 migration.
 - **Single maintainer.** Interop is only meaningful against a stack someone else
   operates; find a second operator early.
 
