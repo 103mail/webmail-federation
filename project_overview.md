@@ -24,7 +24,7 @@ this one in isolation:
   production, SQLite under test (ADR 19). Implements the Basic tier (ADR 17)
   and advertises `registrar: false`. Federation code is in
   `internal/federation`, the mail side of it in `internal/email`, and the
-  chat side, still uncommitted, in `internal/chat`. The OpenAPI
+  chat side in `internal/chat` (RFC §14, ADR 23). The OpenAPI
   spec of record is in `docs/openapi/v1/`, tested against the routes.
 - `webmail-client`: React/MUI SPA, one bundle for all Domains. Real API client,
   per-Domain `/config.json` and `DomainContext`, chat over WebSocket. No
@@ -63,8 +63,8 @@ this one in isolation:
   example.com, mail.acme.test and its unrelated parent acme.test), each with
   its own database, API process and hostname, plus the scripted test peer
   peer.test, a fault proxy and a clock the stories move forward. Federation
-  works there and M1 stories 01-09 are green, inbound rate limiting included;
-  nothing federates in staging or production yet.
+  works there, and M1 stories 01-09 (inbound rate limiting included) and the
+  M7 chat stories are green; nothing federates in staging or production yet.
 - Chat and calendar federate as optional extensions on protocol version
   `0.3`, each advertised by its own descriptor field: chat in RFC §14
   (`chat`, `chat_read` envelopes) and calendar in RFC §15 (`meeting`,

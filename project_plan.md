@@ -10,12 +10,12 @@ This file only adds the order of work and where each part currently stands.
 | Repo                 | Role                                         | State                                                                                                                                                                                                                                                                                                                                                                 |
 | -------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `webmail-federation` | RFC + design + plan + overview               | RFC revision 0.3, tagged `rfc-0.3` (protocol version 0.2 on the wire), complete for the Basic and Registrar tiers. Since 0.3: replies belong to the thread (§5.5), messages from non-members of a thread are refused with `425 not_a_member` (§5.6, §6.3), the chat extension (§14) defines protocol version `0.3`, and the calendar extension (§15) is drafted on it, with `kind` general to `0.3` and unknown kinds refused with `400 unsupported_kind` (§10). Overview and design are current. |
-| `webmail-server`     | Go backend, replaces the PHP side            | Implements the **Basic tier** (ADR 17, hardened in ADR 21): discovery + TOFU, Ed25519 signing, envelopes, inline attachments, outbox worker with 72h retry, backfill once a peer is back, and local bounces carrying the peer's error code. Attachment limits on both sides, non-members refused, own-key rotation with a 48h window, Appendix B vector tested, inbound rate limiting per peer Domain. PostgreSQL in production, SQLite under test (ADR 19). Advertises `registrar: false`. The OpenAPI spec of record now lives here (`docs/openapi/v1/`, moved from the legacy repo and extended with the federation, chat-session, SES webhook and thread move/leave routes), and `openapi_test.go` fails when a served route is missing from it or the reverse. Chat federation (RFC §14) is in progress and uncommitted: descriptor `chat` field, chat envelopes through the outbox on their own loop, receiving and history. Calendar does not federate: an attendee on another Domain gets a `g_attendee` row and nothing is sent. |
+| `webmail-server`     | Go backend, replaces the PHP side            | Implements the **Basic tier** (ADR 17, hardened in ADR 21): discovery + TOFU, Ed25519 signing, envelopes, inline attachments, outbox worker with 72h retry, backfill once a peer is back, and local bounces carrying the peer's error code. Attachment limits on both sides, non-members refused, own-key rotation with a 48h window, Appendix B vector tested, inbound rate limiting per peer Domain. PostgreSQL in production, SQLite under test (ADR 19). Advertises `registrar: false`. The OpenAPI spec of record now lives here (`docs/openapi/v1/`, moved from the legacy repo and extended with the federation, chat-session, SES webhook and thread move/leave routes), and `openapi_test.go` fails when a served route is missing from it or the reverse. Implements the chat extension (RFC §14, ADR 23): advertises `chat: true` and versions `0.2` and `0.3`, chat and `chat_read` envelopes through the outbox on a 1-second loop of their own with a 1-hour budget, receiving, history for new members, read receipts, and bounces in the chat. Calendar does not federate: an attendee on another Domain gets a `g_attendee` row and nothing is sent. |
 | `webmail-client`     | React/MUI SPA, one bundle for all Domains    | Real API client, `/config.json` + `DomainContext` per Domain, chat over WebSocket. No federation-specific UI yet (remote recipient marking, bounce rendering).                                                                                                                                                                                                        |
 | `webmail-legacy`     | PHP monolith, current 103mail.com production | Reference for behaviour and schema only (ADR 2). Single-domain, `{7digit}@103mail.com` auto-onboarding. Must not be extended. No longer holds the OpenAPI spec.                                                                                                                                                                                                       |
 | `webmail-deploy`     | Local compose stack (moved out of `webmail-server/deploy`) | Four federated Domains plus the scripted peer `peer.test`, with a fault proxy, mail sink, per-story config overrides, a movable clock and read-only controls (ADR 20). `docker compose up` alone: a setup service makes certificates and keys, and each Domain is at `http://localhost:8001` to `8004`, so no `/etc/hosts` entries or trusted CA. Federation still runs over HTTPS between the real hostnames on the federation network. |
 | `webmail-website`    | Hugo marketing site for 103mail.com          | Says nothing about federation, own domains, or operators.                                                                                                                                                                                                                                                                                                             |
-| `webmail-e2e`        | End-to-end stories per milestone (godog)     | Stories for M1-M6 written, and M7 chat stories (`m7-beyond-mail/01-chat-across-domains.feature`, five stories for RFC §14) tagged `@wip`. M1 stories 01-09 green on a virtual clock (about 4 minutes for the suite), the rate-limit scenarios of stories 04 and 08 included. The suite runs in a container on the stack's network, so no `/etc/hosts` entries are needed. Committed: it brings up its own stack (`stack/`, from four images, no host ports). Uncommitted work points it at `../webmail-deploy` instead; which of the two stays is open. |
+| `webmail-e2e`        | End-to-end stories per milestone (godog)     | Stories for M1-M6 written, and M7 chat stories (`m7-beyond-mail/01-chat-across-domains.feature`, five stories for RFC §14) green. M1 stories 01-09 green on a virtual clock (about 4 minutes for the suite), the rate-limit scenarios of stories 04 and 08 included. The suite runs in a container on the stack's network, so no `/etc/hosts` entries are needed. Committed: it brings up its own stack (`stack/`, from four images, no host ports). Uncommitted work points it at `../webmail-deploy` instead; which of the two stays is open. |
 
 Design migration steps (`project_design.md`, "Migration steps") mapped to
 reality:
@@ -227,11 +227,13 @@ Spec:
 
 Server, chat:
 
-- Implement RFC §14. In progress (uncommitted in `webmail-server`):
-  descriptor `chat` field, chat and `chat_read` envelopes through the outbox
-  on a loop of their own, receiving, and history for new members. Add an ADR.
-- Answer an unknown `kind` with `400 unsupported_kind` instead of
-  `schema_violation` (`internal/federation/chat.go`).
+- Implement RFC §14. Done (2026-10-25, ADR 23), unknown kinds answered
+  `400 unsupported_kind` included.
+- Tell the user at once when an added address is on a Domain without chat
+  (§14.1); today they hear it from `mailer-daemon` when the first envelope is
+  refused.
+- Throttle read receipts to one per chat, reader and Destination every few
+  seconds, and rate-limit chat envelopes apart from mail (§14.7, §14.8).
 
 Server, calendar:
 
@@ -258,7 +260,7 @@ Client:
 
 End-to-end:
 
-- Make the five M7 chat stories green and drop `@wip`.
+- Make the five M7 chat stories green and drop `@wip`. Done (2026-10-25).
 - Write calendar stories: invite across three Domains, move and cancel a
   meeting, answers reaching every Domain, removing an attendee, a recurring
   meeting with one occurrence moved and one cancelled, and an attendee on a
