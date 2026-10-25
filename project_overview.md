@@ -73,6 +73,6 @@ this one in isolation:
   organizer's Domain, which alone invites and removes attendees; each
   attendee's own Domain sends their answer to every attendee's Domain;
   recurrence is JSON modelled on RRULE. Nothing about a meeting goes by
-  email, so External addresses cannot be invited. Chat federation is being
-  built in `webmail-server` (uncommitted) with M7 stories tagged `@wip`;
-  calendar federation is spec only.
+  email, so External addresses cannot be invited. Both are implemented in
+  `webmail-server` (ADR 23 for chat, ADR 22 for calendar); the M7 chat
+  stories are green, and the calendar stories are still to be written.
